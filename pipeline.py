@@ -4,8 +4,6 @@ import wave
 import os
 import urllib.request
 from datetime import date
-import numpy as np
-import sounddevice as sd
 import openai
 import anthropic
 from dotenv import load_dotenv
@@ -64,6 +62,9 @@ def saludo_voz(temp_max, es_dia_cobro):
 
 
 def cargar_stock():
+    import numpy as np
+    import sounddevice as sd
+
     DURACION = 60
     TEMP_WAV = "temp_stock.wav"
 

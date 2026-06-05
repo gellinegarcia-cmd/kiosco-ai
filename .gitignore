@@ -1,0 +1,21 @@
+# API keys
+.env
+
+# Audio
+*.m4a
+*.mp3
+*.wav
+*.mp4
+*.ogg
+
+# Archivos generados en runtime
+contexto_dia.txt
+stock.json
+decisiones.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python

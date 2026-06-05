@@ -15,6 +15,11 @@ SYSTEM_PROMPT = (
 )
 
 
+@app.route("/", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "mensaje": "kiosco-ai corriendo"})
+
+
 @app.route("/audio", methods=["POST"])
 def procesar_audio():
     if "audio" not in request.files:
@@ -79,5 +84,5 @@ def get_decisiones():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", debug=True, port=port)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", debug=False, port=port)

@@ -9,9 +9,6 @@ load_dotenv()
 
 app = Flask(__name__)
 
-openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
 DECISIONES_FILE = "decisiones.txt"
 
 SYSTEM_PROMPT = (
@@ -45,6 +42,9 @@ def procesar_audio():
         tmp_path = tmp.name
 
     try:
+        openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
         with open(tmp_path, "rb") as f:
             transcripcion = openai_client.audio.transcriptions.create(
                 model="whisper-1",

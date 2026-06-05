@@ -1,9 +1,16 @@
 import os
 import tempfile
+import openai
+import anthropic
 from flask import Flask, request, jsonify
-from pipeline import openai_client, anthropic_client
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
+
+openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 DECISIONES_FILE = "decisiones.txt"
 
@@ -15,9 +22,14 @@ SYSTEM_PROMPT = (
 )
 
 
-@app.route("/", methods=["GET"])
+@app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "mensaje": "kiosco-ai corriendo"})
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({"status": "ok", "mensaje": "kiosco-ai corriendo"}), 200
 
 
 @app.route("/audio", methods=["POST"])
@@ -60,10 +72,7 @@ def procesar_audio():
         with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
             f.write(decisiones)
 
-        return jsonify({
-            "transcripcion": texto,
-            "decisiones": decisiones
-        })
+        return jsonify({"transcripcion": texto, "decisiones": decisiones})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -81,5 +90,3 @@ def get_decisiones():
         contenido = f.read()
 
     return jsonify({"decisiones": contenido})
-
-

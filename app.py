@@ -83,6 +83,42 @@ def procesar_audio():
         os.remove(tmp_path)
 
 
+@app.route("/texto", methods=["POST"])
+def procesar_texto():
+    data = request.get_json(silent=True)
+    if not data or not data.get("texto", "").strip():
+        return jsonify({"error": "Enviá JSON con campo 'texto' no vacío."}), 400
+
+    texto = data["texto"].strip()
+
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Analizá esta situación de un kiosco y generá exactamente 5 decisiones concretas "
+                        f"basadas en lo que te escriben:\n\n{texto}"
+                    )
+                }
+            ]
+        )
+        decisiones = respuesta.content[0].text
+
+        with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
+            f.write(decisiones)
+
+        return jsonify({"texto": texto, "decisiones": decisiones})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/decisiones", methods=["GET"])
 def get_decisiones():
     if not os.path.exists(DECISIONES_FILE):

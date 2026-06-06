@@ -86,10 +86,11 @@ def procesar_audio():
 @app.route("/texto", methods=["POST"])
 def procesar_texto():
     data = request.get_json(silent=True)
-    if not data or not data.get("texto", "").strip():
-        return jsonify({"error": "Enviá JSON con campo 'texto' no vacío."}), 400
+    texto = (data or {}).get("mensaje") or (data or {}).get("texto", "")
+    if not texto.strip():
+        return jsonify({"error": "Enviá JSON con campo 'mensaje' no vacío."}), 400
 
-    texto = data["texto"].strip()
+    texto = texto.strip()
 
     try:
         anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))

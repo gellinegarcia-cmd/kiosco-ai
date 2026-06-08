@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-vad_recorder.py — Grabación con VAD usando webrtcvad + sounddevice
+vad_recorder.py — Grabación con VAD por energía RMS + sounddevice
 
-Escucha el micrófono en tiempo real, detecta voz humana y envía el audio
-al servidor cuando hay 2 segundos de silencio consecutivo.
+Escucha el micrófono en tiempo real, detecta voz humana por nivel de energía
+y envía el audio al servidor cuando hay 2 segundos de silencio consecutivo.
 
 Instalación:
     pip install sounddevice requests python-dotenv
-    pip install webrtcvad-wheels   # Windows (incluye binarios precompilados)
-    pip install webrtcvad          # Linux / Mac
 
 Nota: OPENAI_API_KEY y ANTHROPIC_API_KEY son usadas por el servidor,
       no por este script. Se cargan desde .env por coherencia con el proyecto.
@@ -17,31 +15,41 @@ Nota: OPENAI_API_KEY y ANTHROPIC_API_KEY son usadas por el servidor,
 import io
 import os
 import queue
+import struct
 import sys
 import threading
 import wave
 
 import requests
 import sounddevice as sd
-import webrtcvad
 from dotenv import load_dotenv
+
+sys.stdout.reconfigure(encoding="utf-8")
 
 load_dotenv()
 
 # ── Configuración ─────────────────────────────────────────────────────────────
 
-API_URL            = "https://kiosco-ai.onrender.com/audio"
-SAMPLE_RATE        = 16_000   # Hz — obligatorio para webrtcvad
-FRAME_MS           = 30       # duración de frame: 10, 20 o 30 ms
-FRAME_SAMPLES      = int(SAMPLE_RATE * FRAME_MS / 1000)   # 480 muestras
-VAD_AGGRESSIVENESS = 2        # 0 = permisivo … 3 = muy estricto
-SILENCE_SECS       = 2.0      # segundos de silencio para cerrar bloque
-MIN_VOICE_SECS     = 0.5      # mínimo de voz para no descartar
+API_URL          = "https://kiosco-ai.onrender.com/audio"
+SAMPLE_RATE      = 16_000    # Hz
+FRAME_MS         = 30        # duración de frame en ms
+FRAME_SAMPLES    = int(SAMPLE_RATE * FRAME_MS / 1000)   # 480 muestras
+RMS_THRESHOLD    = 0.01      # 0.0–1.0 (sube si hay ruido de fondo)
+SILENCE_SECS     = 2.0       # segundos de silencio para cerrar bloque
+MIN_VOICE_SECS   = 0.5       # mínimo de voz para no descartar
 
-SILENCE_FRAMES  = int(SILENCE_SECS * 1000 / FRAME_MS)
+SILENCE_FRAMES   = int(SILENCE_SECS * 1000 / FRAME_MS)
 MIN_VOICE_FRAMES = int(MIN_VOICE_SECS * 1000 / FRAME_MS)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def frame_rms(frame_bytes: bytes) -> float:
+    """RMS normalizado [0.0, 1.0] de un frame PCM 16-bit mono."""
+    n = len(frame_bytes) // 2
+    samples = struct.unpack(f"{n}h", frame_bytes)
+    rms = (sum(s * s for s in samples) / n) ** 0.5
+    return rms / 32768.0
+
 
 def frames_to_wav(frames: list[bytes]) -> bytes:
     buf = io.BytesIO()
@@ -54,7 +62,6 @@ def frames_to_wav(frames: list[bytes]) -> bytes:
 
 
 def send_audio(wav_bytes: bytes, voz_secs: float) -> None:
-    """Envía el WAV al servidor en un hilo separado."""
     print(f"\n📤 Enviando {voz_secs:.1f}s de audio al servidor...", flush=True)
     try:
         resp = requests.post(
@@ -81,19 +88,18 @@ def send_audio(wav_bytes: bytes, voz_secs: float) -> None:
 # ── Loop principal ────────────────────────────────────────────────────────────
 
 def run() -> None:
-    vad         = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-    audio_q     = queue.Queue()
+    audio_q: queue.Queue[bytes] = queue.Queue()
 
-    voiced: list[bytes]  = []   # frames de voz confirmada
+    voiced:  list[bytes] = []   # frames de voz activa
     silence: list[bytes] = []   # frames de silencio tras voz (ventana de espera)
-    recording            = False
+    recording = False
 
     def audio_callback(indata, frames, time_info, status):
         if status:
             print(f"⚠️  sounddevice: {status}", file=sys.stderr)
         audio_q.put(bytes(indata))
 
-    print("🎙️  Escuchando... (Ctrl+C para detener)\n", flush=True)
+    print(f"🎙️  Escuchando... (umbral RMS={RMS_THRESHOLD}, Ctrl+C para detener)\n", flush=True)
 
     with sd.RawInputStream(
         samplerate=SAMPLE_RATE,
@@ -104,11 +110,7 @@ def run() -> None:
     ):
         while True:
             frame = audio_q.get()
-
-            try:
-                is_speech = vad.is_speech(frame, SAMPLE_RATE)
-            except Exception:
-                continue    # frame corrupto (longitud incorrecta), ignorar
+            is_speech = frame_rms(frame) >= RMS_THRESHOLD
 
             if is_speech:
                 if not recording:
@@ -136,10 +138,7 @@ def run() -> None:
                                 daemon=True,
                             ).start()
                         else:
-                            print(
-                                f"⏭️  Descartado ({voz_secs:.1f}s — muy corto)\n",
-                                flush=True,
-                            )
+                            print(f"⏭️  Descartado ({voz_secs:.1f}s — muy corto)\n", flush=True)
                             print("🎙️  Escuchando...\n", flush=True)
 
                         voiced.clear()

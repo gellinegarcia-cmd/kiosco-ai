@@ -3,6 +3,7 @@ import json
 import tempfile
 import openai
 import anthropic
+from datetime import datetime
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ app = Flask(__name__)
 CORS(app)
 
 DECISIONES_FILE = "decisiones.txt"
+CONTEXTO_FILE   = "contexto_dia.txt"
 
 BASE_SYSTEM_PROMPT = (
     "Sos el asistente inteligente de un negocio argentino. "
@@ -60,6 +62,15 @@ def parse_perfil(perfil_raw):
         return None
 
 
+def acumular_contexto(texto):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    linea = f"[{timestamp}] {texto}\n"
+    with open(CONTEXTO_FILE, "a", encoding="utf-8") as f:
+        f.write(linea)
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"}), 200
@@ -80,14 +91,13 @@ def procesar_audio():
 
     archivo = request.files["audio"]
     sufijo = os.path.splitext(archivo.filename)[1] or ".m4a"
-    perfil = parse_perfil(request.form.get("perfil"))
 
     with tempfile.NamedTemporaryFile(suffix=sufijo, delete=False) as tmp:
         archivo.save(tmp.name)
         tmp_path = tmp.name
 
     tamanio_kb = os.path.getsize(tmp_path) / 1024
-    print(f"[/audio] Archivo recibido: {archivo.filename!r} | {tamanio_kb:.1f} KB | perfil: {bool(perfil)}", flush=True)
+    print(f"[/audio] Archivo recibido: {archivo.filename!r} | {tamanio_kb:.1f} KB", flush=True)
 
     if tamanio_kb < 1:
         os.remove(tmp_path)
@@ -97,7 +107,6 @@ def procesar_audio():
     try:
         print("[/audio] Transcribiendo con Whisper...", flush=True)
         openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
         with open(tmp_path, "rb") as f:
             transcripcion = openai_client.audio.transcriptions.create(
@@ -105,22 +114,64 @@ def procesar_audio():
                 file=f,
                 language="es"
             )
-        texto = transcripcion.text
+        texto = transcripcion.text.strip()
         print(f"[/audio] Transcripción ({len(texto)} chars): {texto[:120]!r}", flush=True)
 
+        if texto:
+            acumular_contexto(texto)
+            print(f"[/audio] Contexto acumulado en {CONTEXTO_FILE}", flush=True)
+        else:
+            print("[/audio] Transcripción vacía, no se acumula", flush=True)
+
+        print("[/audio] OK — transcripción guardada", flush=True)
+        return jsonify({"transcripcion": texto, "acumulado": bool(texto)})
+
+    except Exception as e:
+        print(f"[/audio] ERROR: {type(e).__name__}: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.route("/analizar", methods=["GET"])
+def analizar():
+    print("[/analizar] Request recibido", flush=True)
+
+    if not os.path.exists(CONTEXTO_FILE):
+        return jsonify({"error": "No hay contexto acumulado. Enviá audio primero."}), 404
+
+    with open(CONTEXTO_FILE, "r", encoding="utf-8") as f:
+        contexto = f.read().strip()
+
+    if not contexto:
+        return jsonify({"error": "El contexto del día está vacío."}), 404
+
+    perfil_raw = request.args.get("perfil")
+    perfil = parse_perfil(perfil_raw)
+
+    lineas = [l for l in contexto.splitlines() if l.strip()]
+    print(f"[/analizar] Analizando {len(lineas)} fragmentos de contexto", flush=True)
+
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         system_prompt = construir_system_prompt(perfil)
 
-        print("[/audio] Generando decisiones con Claude...", flush=True)
+        print("[/analizar] Generando decisiones con Claude...", flush=True)
         respuesta = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=2048,
             system=system_prompt,
             messages=[
                 {
                     "role": "user",
                     "content": (
-                        f"Analizá esta conversación del negocio y generá exactamente 5 decisiones concretas "
-                        f"basadas en lo que escuchaste:\n\n{texto}"
+                        f"A continuación están todas las conversaciones registradas en el negocio durante el día de hoy, "
+                        f"con su hora. Analizalas en conjunto y generá entre 8 y 10 decisiones detalladas y accionables "
+                        f"para mejorar la operación del negocio. Considerá patrones, horarios pico, productos mencionados "
+                        f"y necesidades recurrentes de los clientes.\n\n"
+                        f"CONVERSACIONES DEL DÍA:\n{contexto}"
                     )
                 }
             ]
@@ -130,16 +181,31 @@ def procesar_audio():
         with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
             f.write(decisiones)
 
-        print("[/audio] OK — respuesta enviada", flush=True)
-        return jsonify({"transcripcion": texto, "decisiones": decisiones})
+        print("[/analizar] OK — decisiones generadas y guardadas", flush=True)
+        return jsonify({"decisiones": decisiones, "fragmentos_analizados": len(lineas)})
 
     except Exception as e:
-        print(f"[/audio] ERROR: {type(e).__name__}: {e}", flush=True)
+        print(f"[/analizar] ERROR: {type(e).__name__}: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
 
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+
+@app.route("/contexto", methods=["DELETE"])
+def limpiar_contexto():
+    print("[/contexto DELETE] Limpiando contexto del día", flush=True)
+    with open(CONTEXTO_FILE, "w", encoding="utf-8") as f:
+        f.write("")
+    print("[/contexto DELETE] Contexto limpiado", flush=True)
+    return jsonify({"mensaje": "Contexto del día limpiado correctamente."})
+
+
+@app.route("/contexto", methods=["GET"])
+def ver_contexto():
+    if not os.path.exists(CONTEXTO_FILE):
+        return jsonify({"contexto": "", "fragmentos": 0})
+    with open(CONTEXTO_FILE, "r", encoding="utf-8") as f:
+        contenido = f.read()
+    lineas = [l for l in contenido.splitlines() if l.strip()]
+    return jsonify({"contexto": contenido, "fragmentos": len(lineas)})
 
 
 @app.route("/texto", methods=["POST"])
@@ -154,7 +220,6 @@ def procesar_texto():
 
     try:
         anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
         system_prompt = construir_system_prompt(perfil)
 
         respuesta = anthropic_client.messages.create(

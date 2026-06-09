@@ -1,6 +1,7 @@
 import os
 import json
 import tempfile
+import threading
 import openai
 import anthropic
 from datetime import datetime
@@ -158,39 +159,42 @@ def analizar():
         contexto = "\n".join(lineas)
     print(f"[/analizar] Analizando {len(lineas)} fragmentos de contexto", flush=True)
 
-    try:
-        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        system_prompt = construir_system_prompt(perfil)
+    def analizar_en_background(contexto_snapshot, system_prompt, n_fragmentos):
+        try:
+            anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            print("[/analizar] Generando decisiones con Claude...", flush=True)
+            respuesta = anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2048,
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"A continuación están todas las conversaciones registradas en el negocio durante el día de hoy, "
+                            f"con su hora. Analizalas en conjunto y generá entre 8 y 10 decisiones detalladas y accionables "
+                            f"para mejorar la operación del negocio. Considerá patrones, horarios pico, productos mencionados "
+                            f"y necesidades recurrentes de los clientes.\n\n"
+                            f"CONVERSACIONES DEL DÍA:\n{contexto_snapshot}"
+                        )
+                    }
+                ]
+            )
+            decisiones = respuesta.content[0].text
+            with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
+                f.write(decisiones)
+            print(f"[/analizar] OK — {n_fragmentos} fragmentos analizados, decisiones guardadas", flush=True)
+        except Exception as e:
+            print(f"[/analizar] ERROR en background: {type(e).__name__}: {e}", flush=True)
 
-        print("[/analizar] Generando decisiones con Claude...", flush=True)
-        respuesta = anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            system=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"A continuación están todas las conversaciones registradas en el negocio durante el día de hoy, "
-                        f"con su hora. Analizalas en conjunto y generá entre 8 y 10 decisiones detalladas y accionables "
-                        f"para mejorar la operación del negocio. Considerá patrones, horarios pico, productos mencionados "
-                        f"y necesidades recurrentes de los clientes.\n\n"
-                        f"CONVERSACIONES DEL DÍA:\n{contexto}"
-                    )
-                }
-            ]
-        )
-        decisiones = respuesta.content[0].text
+    system_prompt = construir_system_prompt(perfil)
+    threading.Thread(
+        target=analizar_en_background,
+        args=(contexto, system_prompt, len(lineas)),
+        daemon=True
+    ).start()
 
-        with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
-            f.write(decisiones)
-
-        print("[/analizar] OK — decisiones generadas y guardadas", flush=True)
-        return jsonify({"decisiones": decisiones, "fragmentos_analizados": len(lineas)})
-
-    except Exception as e:
-        print(f"[/analizar] ERROR: {type(e).__name__}: {e}", flush=True)
-        return jsonify({"error": str(e)}), 500
+    return jsonify({"status": "procesando", "fragmentos": len(lineas)})
 
 
 @app.route("/contexto", methods=["DELETE"])

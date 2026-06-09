@@ -152,6 +152,10 @@ def analizar():
     perfil = parse_perfil(perfil_raw)
 
     lineas = [l for l in contexto.splitlines() if l.strip()]
+    if len(lineas) > 50:
+        print(f"[/analizar] {len(lineas)} fragmentos — limitando a los últimos 50", flush=True)
+        lineas = lineas[-50:]
+        contexto = "\n".join(lineas)
     print(f"[/analizar] Analizando {len(lineas)} fragmentos de contexto", flush=True)
 
     try:

@@ -5,7 +5,7 @@ import threading
 import openai
 import anthropic
 import gspread
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 from google.oauth2.service_account import Credentials
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
@@ -68,12 +68,20 @@ def parse_perfil(perfil_raw):
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
 
-def get_sheet():
-    """Devuelve la primera hoja del spreadsheet configurado.
-    Credenciales: variable de entorno GOOGLE_CREDENTIALS (JSON string)
-    o archivo credentials.json en el directorio de trabajo.
-    Sheet: variable de entorno GOOGLE_SHEET_ID.
-    """
+CONFIG_HEADERS  = ["activo", "hora_apertura", "hora_cierre", "descanso",
+                   "hora_siesta_inicio", "hora_siesta_fin", "saludo_automatico"]
+CONFIG_DEFAULTS = {
+    "activo":             "false",
+    "hora_apertura":      "09:00",
+    "hora_cierre":        "20:00",
+    "descanso":           "false",
+    "hora_siesta_inicio": "13:00",
+    "hora_siesta_fin":    "14:00",
+    "saludo_automatico":  "false",
+}
+
+
+def _gspread_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if creds_json:
         creds = Credentials.from_service_account_info(
@@ -83,12 +91,66 @@ def get_sheet():
         creds = Credentials.from_service_account_file(
             "credentials.json", scopes=GSHEETS_SCOPES
         )
-    client = gspread.authorize(creds)
+    return gspread.authorize(creds)
+
+
+def get_sheet():
+    """Devuelve la hoja 'Sheet1' (contexto/transcripciones)."""
+    client = _gspread_client()
     ws = client.open_by_key(GOOGLE_SHEET_ID).sheet1
-    # Crear encabezados si la hoja está vacía
     if not ws.get_all_values():
         ws.append_row(["timestamp", "transcripcion"])
     return ws
+
+
+def get_config_sheet():
+    """Devuelve la hoja 'config', creándola con defaults si no existe."""
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("config")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="config", rows=2,
+                                       cols=len(CONFIG_HEADERS))
+        ws.append_row(CONFIG_HEADERS)
+        ws.append_row([CONFIG_DEFAULTS[h] for h in CONFIG_HEADERS])
+    return ws
+
+
+def leer_config(ws):
+    """Lee la fila de valores de la hoja config y devuelve un dict."""
+    todas = ws.get_all_values()
+    if len(todas) < 2:
+        return dict(CONFIG_DEFAULTS)
+    headers = todas[0]
+    valores = todas[1]
+    return {h: (valores[i] if i < len(valores) else CONFIG_DEFAULTS.get(h, ""))
+            for i, h in enumerate(headers)}
+
+
+def calcular_debe_grabar(cfg):
+    """Devuelve True si el asistente debe estar grabando ahora (hora Argentina)."""
+    if cfg.get("activo", "false").lower() != "true":
+        return False
+
+    tz_ar = timezone(timedelta(hours=-3))
+    ahora = datetime.now(tz_ar)
+    cur   = ahora.hour * 60 + ahora.minute
+
+    def hm(t):
+        h, m = t.split(":")
+        return int(h) * 60 + int(m)
+
+    if not (hm(cfg.get("hora_apertura", "09:00")) <= cur
+            < hm(cfg.get("hora_cierre", "20:00"))):
+        return False
+
+    if cfg.get("descanso", "false").lower() == "true":
+        if (hm(cfg.get("hora_siesta_inicio", "13:00")) <= cur
+                < hm(cfg.get("hora_siesta_fin", "14:00"))):
+            return False
+
+    return True
 
 
 def get_filas_hoy(ws):
@@ -140,6 +202,76 @@ def health():
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
+
+
+@app.route("/config", methods=["GET"])
+def get_config():
+    try:
+        ws  = get_config_sheet()
+        cfg = leer_config(ws)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    def b(k): return cfg.get(k, "false").lower() == "true"
+    return jsonify({
+        "activo":            b("activo"),
+        "apertura":          cfg.get("hora_apertura",      "09:00"),
+        "cierre":            cfg.get("hora_cierre",        "20:00"),
+        "descanso":          b("descanso"),
+        "descanso_inicio":   cfg.get("hora_siesta_inicio", "13:00"),
+        "descanso_fin":      cfg.get("hora_siesta_fin",    "14:00"),
+        "saludo_automatico": b("saludo_automatico"),
+        "debe_grabar":       calcular_debe_grabar(cfg),
+    })
+
+
+@app.route("/config", methods=["POST"])
+def set_config():
+    data = request.get_json(silent=True) or {}
+
+    def bool_str(v):
+        return "true" if (v is True or str(v).lower() == "true") else "false"
+
+    nuevos = {
+        "activo":             bool_str(data.get("activo",            False)),
+        "hora_apertura":      data.get("apertura",          "09:00"),
+        "hora_cierre":        data.get("cierre",            "20:00"),
+        "descanso":           bool_str(data.get("descanso",          False)),
+        "hora_siesta_inicio": data.get("descanso_inicio",   "13:00"),
+        "hora_siesta_fin":    data.get("descanso_fin",      "14:00"),
+        "saludo_automatico":  bool_str(data.get("saludo_automatico", False)),
+    }
+
+    try:
+        ws    = get_config_sheet()
+        todas = ws.get_all_values()
+        if todas:
+            headers = todas[0]
+            fila    = [nuevos.get(h, "") for h in headers]
+            col_fin = chr(ord("A") + len(headers) - 1)
+            if len(todas) >= 2:
+                ws.update(f"A2:{col_fin}2", [fila])
+            else:
+                ws.append_row(fila)
+        else:
+            ws.append_row(CONFIG_HEADERS)
+            ws.append_row([nuevos[h] for h in CONFIG_HEADERS])
+        print(f"[/config POST] Guardado: {nuevos}", flush=True)
+    except Exception as e:
+        print(f"[/config POST] ERROR: {type(e).__name__}: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+    def b(k): return nuevos[k] == "true"
+    return jsonify({
+        "activo":            b("activo"),
+        "apertura":          nuevos["hora_apertura"],
+        "cierre":            nuevos["hora_cierre"],
+        "descanso":          b("descanso"),
+        "descanso_inicio":   nuevos["hora_siesta_inicio"],
+        "descanso_fin":      nuevos["hora_siesta_fin"],
+        "saludo_automatico": b("saludo_automatico"),
+        "debe_grabar":       calcular_debe_grabar(nuevos),
+    })
 
 
 @app.route("/audio", methods=["POST"])

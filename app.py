@@ -4,7 +4,9 @@ import tempfile
 import threading
 import openai
 import anthropic
-from datetime import datetime
+import gspread
+from datetime import date, datetime
+from google.oauth2.service_account import Credentials
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -15,7 +17,11 @@ app = Flask(__name__)
 CORS(app)
 
 DECISIONES_FILE = "decisiones.txt"
-CONTEXTO_FILE   = "contexto_dia.txt"
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+GSHEETS_SCOPES  = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 BASE_SYSTEM_PROMPT = (
     "Sos el asistente inteligente de un negocio argentino. "
@@ -25,10 +31,11 @@ BASE_SYSTEM_PROMPT = (
 )
 
 
+# ── Helpers generales ─────────────────────────────────────────────────────────
+
 def construir_system_prompt(perfil=None):
     if not perfil:
         return BASE_SYSTEM_PROMPT
-
     partes = []
     if perfil.get("nombre"):
         partes.append(f"Nombre del negocio: {perfil['nombre']}")
@@ -38,16 +45,12 @@ def construir_system_prompt(perfil=None):
         partes.append(f"Ubicación: {perfil['barrio']}")
     if perfil.get("clientes"):
         c = perfil["clientes"]
-        clientes_str = ", ".join(c) if isinstance(c, list) else str(c)
-        partes.append(f"Clientes principales: {clientes_str}")
+        partes.append(f"Clientes principales: {', '.join(c) if isinstance(c, list) else c}")
     if perfil.get("productos"):
         p = perfil["productos"]
-        productos_str = ", ".join(p) if isinstance(p, list) else str(p)
-        partes.append(f"Productos más vendidos: {productos_str}")
-
+        partes.append(f"Productos más vendidos: {', '.join(p) if isinstance(p, list) else p}")
     if not partes:
         return BASE_SYSTEM_PROMPT
-
     perfil_str = "\n".join(f"  - {p}" for p in partes)
     return BASE_SYSTEM_PROMPT + f"\n\nPERFIL DEL NEGOCIO:\n{perfil_str}"
 
@@ -63,11 +66,68 @@ def parse_perfil(perfil_raw):
         return None
 
 
-def acumular_contexto(texto):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    linea = f"[{timestamp}] {texto}\n"
-    with open(CONTEXTO_FILE, "a", encoding="utf-8") as f:
-        f.write(linea)
+# ── Google Sheets ─────────────────────────────────────────────────────────────
+
+def get_sheet():
+    """Devuelve la primera hoja del spreadsheet configurado.
+    Credenciales: variable de entorno GOOGLE_CREDENTIALS (JSON string)
+    o archivo credentials.json en el directorio de trabajo.
+    Sheet: variable de entorno GOOGLE_SHEET_ID.
+    """
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if creds_json:
+        creds = Credentials.from_service_account_info(
+            json.loads(creds_json), scopes=GSHEETS_SCOPES
+        )
+    else:
+        creds = Credentials.from_service_account_file(
+            "credentials.json", scopes=GSHEETS_SCOPES
+        )
+    client = gspread.authorize(creds)
+    ws = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+    # Crear encabezados si la hoja está vacía
+    if not ws.get_all_values():
+        ws.append_row(["timestamp", "transcripcion"])
+    return ws
+
+
+def get_filas_hoy(ws):
+    """Devuelve las filas de hoy como lista de [timestamp, transcripcion]."""
+    hoy = date.today().isoformat()          # "2026-06-09"
+    todas = ws.get_all_values()
+    # Saltar fila de encabezado
+    datos = todas[1:] if todas and todas[0][0].lower() == "timestamp" else todas
+    return [f for f in datos if len(f) >= 2 and f[0].startswith(hoy)]
+
+
+# ── Background para /analizar ─────────────────────────────────────────────────
+
+def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos):
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        print("[/analizar] Generando decisiones con Claude...", flush=True)
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=system_prompt,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "A continuación están todas las conversaciones registradas en el negocio "
+                    "durante el día de hoy, con su hora. Analizalas en conjunto y generá entre "
+                    "8 y 10 decisiones detalladas y accionables para mejorar la operación del "
+                    "negocio. Considerá patrones, horarios pico, productos mencionados y "
+                    "necesidades recurrentes de los clientes.\n\n"
+                    f"CONVERSACIONES DEL DÍA:\n{contexto_texto}"
+                )
+            }]
+        )
+        decisiones = respuesta.content[0].text
+        with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
+            f.write(decisiones)
+        print(f"[/analizar] OK — {n_fragmentos} fragmentos analizados, decisiones guardadas", flush=True)
+    except Exception as e:
+        print(f"[/analizar] ERROR en background: {type(e).__name__}: {e}", flush=True)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -87,18 +147,18 @@ def procesar_audio():
     print("[/audio] Request recibido", flush=True)
 
     if "audio" not in request.files:
-        print("[/audio] ERROR: campo 'audio' ausente en el request", flush=True)
+        print("[/audio] ERROR: campo 'audio' ausente", flush=True)
         return jsonify({"error": "No se recibió archivo de audio. Enviá el archivo con el campo 'audio'."}), 400
 
     archivo = request.files["audio"]
-    sufijo = os.path.splitext(archivo.filename)[1] or ".m4a"
+    sufijo  = os.path.splitext(archivo.filename)[1] or ".m4a"
 
     with tempfile.NamedTemporaryFile(suffix=sufijo, delete=False) as tmp:
         archivo.save(tmp.name)
         tmp_path = tmp.name
 
     tamanio_kb = os.path.getsize(tmp_path) / 1024
-    print(f"[/audio] Archivo recibido: {archivo.filename!r} | {tamanio_kb:.1f} KB", flush=True)
+    print(f"[/audio] Archivo: {archivo.filename!r} | {tamanio_kb:.1f} KB", flush=True)
 
     if tamanio_kb < 1:
         os.remove(tmp_path)
@@ -108,23 +168,22 @@ def procesar_audio():
     try:
         print("[/audio] Transcribiendo con Whisper...", flush=True)
         openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
         with open(tmp_path, "rb") as f:
             transcripcion = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                language="es"
+                model="whisper-1", file=f, language="es"
             )
         texto = transcripcion.text.strip()
         print(f"[/audio] Transcripción ({len(texto)} chars): {texto[:120]!r}", flush=True)
 
         if texto:
-            acumular_contexto(texto)
-            print(f"[/audio] Contexto acumulado en {CONTEXTO_FILE}", flush=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ws = get_sheet()
+            ws.append_row([timestamp, texto])
+            print(f"[/audio] Fila agregada a Google Sheets: [{timestamp}]", flush=True)
         else:
-            print("[/audio] Transcripción vacía, no se acumula", flush=True)
+            print("[/audio] Transcripción vacía, no se guarda", flush=True)
 
-        print("[/audio] OK — transcripción guardada", flush=True)
+        print("[/audio] OK", flush=True)
         return jsonify({"transcripcion": texto, "acumulado": bool(texto)})
 
     except Exception as e:
@@ -139,118 +198,101 @@ def procesar_audio():
 @app.route("/analizar", methods=["GET"])
 def analizar():
     print("[/analizar] Request recibido", flush=True)
+    try:
+        ws = get_sheet()
+        filas_hoy = get_filas_hoy(ws)
+    except Exception as e:
+        print(f"[/analizar] ERROR leyendo Sheets: {type(e).__name__}: {e}", flush=True)
+        return jsonify({"error": f"Error accediendo a Google Sheets: {e}"}), 500
 
-    if not os.path.exists(CONTEXTO_FILE):
-        return jsonify({"error": "No hay contexto acumulado. Enviá audio primero."}), 404
+    if not filas_hoy:
+        return jsonify({"error": "No hay contexto acumulado hoy."}), 404
 
-    with open(CONTEXTO_FILE, "r", encoding="utf-8") as f:
-        contexto = f.read().strip()
+    if len(filas_hoy) > 50:
+        print(f"[/analizar] {len(filas_hoy)} fragmentos — limitando a los últimos 50", flush=True)
+        filas_hoy = filas_hoy[-50:]
 
-    if not contexto:
-        return jsonify({"error": "El contexto del día está vacío."}), 404
+    n = len(filas_hoy)
+    contexto_texto = "\n".join(f"[{f[0]}] {f[1]}" for f in filas_hoy)
+    print(f"[/analizar] Analizando {n} fragmentos en background", flush=True)
 
-    perfil_raw = request.args.get("perfil")
-    perfil = parse_perfil(perfil_raw)
-
-    lineas = [l for l in contexto.splitlines() if l.strip()]
-    if len(lineas) > 50:
-        print(f"[/analizar] {len(lineas)} fragmentos — limitando a los últimos 50", flush=True)
-        lineas = lineas[-50:]
-        contexto = "\n".join(lineas)
-    print(f"[/analizar] Analizando {len(lineas)} fragmentos de contexto", flush=True)
-
-    def analizar_en_background(contexto_snapshot, system_prompt, n_fragmentos):
-        try:
-            anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-            print("[/analizar] Generando decisiones con Claude...", flush=True)
-            respuesta = anthropic_client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=2048,
-                system=system_prompt,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            f"A continuación están todas las conversaciones registradas en el negocio durante el día de hoy, "
-                            f"con su hora. Analizalas en conjunto y generá entre 8 y 10 decisiones detalladas y accionables "
-                            f"para mejorar la operación del negocio. Considerá patrones, horarios pico, productos mencionados "
-                            f"y necesidades recurrentes de los clientes.\n\n"
-                            f"CONVERSACIONES DEL DÍA:\n{contexto_snapshot}"
-                        )
-                    }
-                ]
-            )
-            decisiones = respuesta.content[0].text
-            with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
-                f.write(decisiones)
-            print(f"[/analizar] OK — {n_fragmentos} fragmentos analizados, decisiones guardadas", flush=True)
-        except Exception as e:
-            print(f"[/analizar] ERROR en background: {type(e).__name__}: {e}", flush=True)
-
+    perfil       = parse_perfil(request.args.get("perfil"))
     system_prompt = construir_system_prompt(perfil)
+
     threading.Thread(
-        target=analizar_en_background,
-        args=(contexto, system_prompt, len(lineas)),
+        target=_analizar_en_background,
+        args=(contexto_texto, system_prompt, n),
         daemon=True
     ).start()
 
-    return jsonify({"status": "procesando", "fragmentos": len(lineas)})
-
-
-@app.route("/contexto", methods=["DELETE"])
-def limpiar_contexto():
-    print("[/contexto DELETE] Limpiando contexto del día", flush=True)
-    with open(CONTEXTO_FILE, "w", encoding="utf-8") as f:
-        f.write("")
-    print("[/contexto DELETE] Contexto limpiado", flush=True)
-    return jsonify({"mensaje": "Contexto del día limpiado correctamente."})
+    return jsonify({"status": "procesando", "fragmentos": n})
 
 
 @app.route("/contexto", methods=["GET"])
 def ver_contexto():
-    if not os.path.exists(CONTEXTO_FILE):
-        return jsonify({"contexto": "", "fragmentos": 0})
-    with open(CONTEXTO_FILE, "r", encoding="utf-8") as f:
-        contenido = f.read()
-    lineas = [l for l in contenido.splitlines() if l.strip()]
-    return jsonify({"contexto": contenido, "fragmentos": len(lineas)})
+    try:
+        ws = get_sheet()
+        filas_hoy = get_filas_hoy(ws)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    contexto_texto = "\n".join(f"[{f[0]}] {f[1]}" for f in filas_hoy)
+    return jsonify({"contexto": contexto_texto, "fragmentos": len(filas_hoy)})
+
+
+@app.route("/contexto", methods=["DELETE"])
+def limpiar_contexto():
+    print("[/contexto DELETE] Eliminando filas de hoy de Google Sheets", flush=True)
+    try:
+        ws = get_sheet()
+        hoy  = date.today().isoformat()
+        todas = ws.get_all_values()
+        # Índices 1-based de filas de hoy (saltando encabezado en fila 1)
+        indices = [
+            i + 1
+            for i, fila in enumerate(todas)
+            if i > 0 and fila and fila[0].startswith(hoy)
+        ]
+        if not indices:
+            return jsonify({"mensaje": "No hay filas de hoy para eliminar.", "eliminadas": 0})
+        # Borrar en bloque (las filas de hoy son siempre las últimas)
+        ws.delete_rows(min(indices), max(indices))
+        print(f"[/contexto DELETE] {len(indices)} filas eliminadas", flush=True)
+        return jsonify({"mensaje": f"Eliminadas {len(indices)} filas de hoy.", "eliminadas": len(indices)})
+    except Exception as e:
+        print(f"[/contexto DELETE] ERROR: {type(e).__name__}: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/texto", methods=["POST"])
 def procesar_texto():
-    data = request.get_json(silent=True)
-    texto = (data or {}).get("mensaje") or (data or {}).get("texto", "")
+    data   = request.get_json(silent=True)
+    texto  = (data or {}).get("mensaje") or (data or {}).get("texto", "")
     if not texto.strip():
         return jsonify({"error": "Enviá JSON con campo 'mensaje' no vacío."}), 400
 
-    texto = texto.strip()
+    texto  = texto.strip()
     perfil = parse_perfil((data or {}).get("perfil"))
 
     try:
         anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        system_prompt = construir_system_prompt(perfil)
-
+        system_prompt    = construir_system_prompt(perfil)
         respuesta = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Analizá esta situación del negocio y generá exactamente 5 decisiones concretas "
-                        f"basadas en lo que te escriben:\n\n{texto}"
-                    )
-                }
-            ]
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Analizá esta situación del negocio y generá exactamente 5 decisiones concretas "
+                    f"basadas en lo que te escriben:\n\n{texto}"
+                )
+            }]
         )
         decisiones = respuesta.content[0].text
-
         with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
             f.write(decisiones)
-
         return jsonify({"texto": texto, "decisiones": decisiones})
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -259,8 +301,6 @@ def procesar_texto():
 def get_decisiones():
     if not os.path.exists(DECISIONES_FILE):
         return jsonify({"decisiones": None, "mensaje": "No hay decisiones generadas aún."}), 404
-
     with open(DECISIONES_FILE, "r", encoding="utf-8") as f:
         contenido = f.read()
-
     return jsonify({"decisiones": contenido})

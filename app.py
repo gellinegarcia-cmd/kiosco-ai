@@ -212,6 +212,10 @@ def get_config():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+    ua = request.headers.get("User-Agent", "")
+    fuente = "android" if ua.startswith("okhttp") else "browser"
+    debe_grabar = calcular_debe_grabar(cfg) if fuente == "android" else False
+
     def b(k): return cfg.get(k, "false").lower() == "true"
     return jsonify({
         "activo":            b("activo"),
@@ -221,7 +225,8 @@ def get_config():
         "descanso_inicio":   cfg.get("hora_siesta_inicio", "13:00"),
         "descanso_fin":      cfg.get("hora_siesta_fin",    "14:00"),
         "saludo_automatico": b("saludo_automatico"),
-        "debe_grabar":       calcular_debe_grabar(cfg),
+        "debe_grabar":       debe_grabar,
+        "fuente":            fuente,
     })
 
 

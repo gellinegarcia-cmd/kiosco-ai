@@ -7,5 +7,3 @@ python-dotenv==1.2.2
 gspread>=6.0.0
 google-auth>=2.0.0
 # google-auth-oauthlib es instalado como dependencia de gspread
-scipy
-numpy

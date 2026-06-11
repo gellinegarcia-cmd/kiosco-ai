@@ -162,64 +162,6 @@ def get_filas_hoy(ws):
     return [f for f in datos if len(f) >= 2 and f[0].startswith(hoy)]
 
 
-# ── DeepFilterNet (lazy, silent fallback) ────────────────────────────────────
-
-_df_model = None
-_df_state = None
-_df_tried = False   # cargamos el modelo una sola vez
-
-
-def _get_deepfilter():
-    global _df_model, _df_state, _df_tried
-    if _df_tried:
-        return _df_model, _df_state
-    _df_tried = True
-    try:
-        from df.enhance import init_df
-        print("[DeepFilter] Cargando modelo...", flush=True)
-        _df_model, _df_state, _ = init_df()
-        print("[DeepFilter] Modelo listo", flush=True)
-    except Exception as e:
-        print(f"[DeepFilter] No disponible: {type(e).__name__}: {e}", flush=True)
-    return _df_model, _df_state
-
-
-def aplicar_deepfilter(input_path):
-    """
-    Reduce ruido con DeepFilterNet.
-    Devuelve ruta de un WAV limpio (archivo nuevo), o input_path si falla.
-    """
-    try:
-        model, df_state = _get_deepfilter()
-        if model is None or df_state is None:
-            return input_path
-
-        import torch
-        import soundfile as sf
-        from df.enhance import enhance
-
-        audio, sr = sf.read(input_path, always_2d=False)
-        audio_t = torch.from_numpy(audio).float()
-        if audio_t.ndim == 1:
-            audio_t = audio_t.unsqueeze(0)          # [1, T]
-
-        if sr != df_state.sr():
-            import torchaudio
-            audio_t = torchaudio.functional.resample(audio_t, sr, df_state.sr())
-
-        enhanced = enhance(model, df_state, audio_t)
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out:
-            out_path = out.name
-        sf.write(out_path, enhanced.squeeze(0).numpy(), df_state.sr())
-        print(f"[DeepFilter] OK — audio limpio: {os.path.basename(out_path)}", flush=True)
-        return out_path
-
-    except Exception as e:
-        print(f"[DeepFilter] Fallback a original: {type(e).__name__}: {e}", flush=True)
-        return input_path
-
-
 # ── Background para /analizar ─────────────────────────────────────────────────
 
 def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos):
@@ -358,12 +300,10 @@ def procesar_audio():
         print("[/audio] Archivo demasiado pequeño, descartado", flush=True)
         return jsonify({"error": "Archivo de audio demasiado pequeño."}), 400
 
-    df_path = aplicar_deepfilter(tmp_path)
-
     try:
         print("[/audio] Transcribiendo con Whisper...", flush=True)
         openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        with open(df_path, "rb") as f:
+        with open(tmp_path, "rb") as f:
             transcripcion = openai_client.audio.transcriptions.create(
                 model="whisper-1", file=f, language="es"
             )
@@ -388,8 +328,6 @@ def procesar_audio():
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-        if df_path != tmp_path and os.path.exists(df_path):
-            os.remove(df_path)
 
 
 @app.route("/analizar", methods=["GET"])

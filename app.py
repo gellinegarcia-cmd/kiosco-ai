@@ -162,6 +162,63 @@ def get_filas_hoy(ws):
     return [f for f in datos if len(f) >= 2 and f[0].startswith(hoy)]
 
 
+# ── Filtro espectral (voz vs música/radio/TV) ────────────────────────────────
+
+UMBRAL_REGULARIDAD = 0.15   # std del flujo espectral normalizado; < umbral = regular = música
+
+
+def _es_audio_irregular(wav_path):
+    """
+    True  → variación espectral irregular → probablemente voz/ruido → enviar a Whisper.
+    False → variación espectral regular/rítmica → probablemente música/radio → descartar.
+    Ante cualquier error devuelve True (fallback seguro).
+    """
+    try:
+        import numpy as np
+        from scipy.io import wavfile
+        from scipy.signal import stft as scipy_stft
+
+        sr, data = wavfile.read(wav_path)
+
+        if data.ndim > 1:
+            data = data[:, 0]
+        if data.dtype == np.int16:
+            data = data.astype(np.float32) / 32768.0
+        elif data.dtype == np.int32:
+            data = data.astype(np.float32) / 2147483648.0
+
+        if len(data) < sr * 0.5:       # menos de 0.5 s → no analizar
+            return True
+
+        win = int(sr * 0.030)          # ventana 30 ms
+        hop = int(sr * 0.010)          # salto 10 ms
+        _, _, Zxx = scipy_stft(data, fs=sr, nperseg=win, noverlap=win - hop)
+        mag = np.abs(Zxx)              # (freq_bins, frames)
+
+        # Flujo espectral frame a frame (L1 de la diferencia de espectros consecutivos)
+        flux = np.sum(np.abs(np.diff(mag, axis=1)), axis=0)
+
+        if len(flux) < 4:
+            return True
+
+        # Normalizar por la media y medir la dispersión
+        flux_norm = flux / (flux.mean() + 1e-9)
+        flux_std  = float(flux_norm.std())
+
+        es_regular = flux_std < UMBRAL_REGULARIDAD
+
+        print(
+            f"[AudioFilter] flux_std={flux_std:.3f}  umbral={UMBRAL_REGULARIDAD}"
+            f"  → {'DESCARTADO (música/radio/TV)' if es_regular else 'irregular → Whisper'}",
+            flush=True,
+        )
+        return not es_regular
+
+    except Exception as exc:
+        print(f"[AudioFilter] Error ({exc}) → Whisper (fallback)", flush=True)
+        return True
+
+
 # ── Background para /analizar ─────────────────────────────────────────────────
 
 def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos):
@@ -299,6 +356,11 @@ def procesar_audio():
         os.remove(tmp_path)
         print("[/audio] Archivo demasiado pequeño, descartado", flush=True)
         return jsonify({"error": "Archivo de audio demasiado pequeño."}), 400
+
+    if not _es_audio_irregular(tmp_path):
+        os.remove(tmp_path)
+        print("[/audio] Descartado por filtro espectral", flush=True)
+        return jsonify({"transcripcion": "", "acumulado": False})
 
     try:
         print("[/audio] Transcribiendo con Whisper...", flush=True)

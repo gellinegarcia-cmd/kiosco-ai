@@ -30,6 +30,29 @@ BASE_SYSTEM_PROMPT = (
     "Siempre respondé en español rioplatense y sé directo y práctico."
 )
 
+DECISIONES_USER_PROMPT = """\
+Analizá las conversaciones del negocio y generá decisiones accionables organizadas en estas tres categorías, usando exactamente este formato para cada una:
+
+### urgente
+💔 **Lo que pasó:** [situación concreta detectada]
+💡 **Lo que podés hacer:** [acción específica realizable hoy o mañana]
+✅ **La decisión:** [resumen en una oración]
+
+### importante
+💔 **Lo que pasó:** [situación concreta detectada]
+💡 **Lo que podés hacer:** [acción para esta semana]
+✅ **La decisión:** [resumen en una oración]
+
+### reflexión
+💔 **Lo que pasó:** [patrón o situación estructural]
+💡 **Lo que podés hacer:** [cambio a mediano plazo]
+✅ **La decisión:** [resumen en una oración]
+
+Podés incluir más de una decisión por categoría si hay varias situaciones relevantes. No agregues título general, texto introductorio ni conclusión al final.
+
+CONVERSACIONES:
+{conversaciones}"""
+
 
 # ── Helpers generales ─────────────────────────────────────────────────────────
 
@@ -174,13 +197,8 @@ def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos):
             system=system_prompt,
             messages=[{
                 "role": "user",
-                "content": (
-                    "A continuación están todas las conversaciones registradas en el negocio "
-                    "durante el día de hoy, con su hora. Analizalas en conjunto y generá entre "
-                    "8 y 10 decisiones detalladas y accionables para mejorar la operación del "
-                    "negocio. Considerá patrones, horarios pico, productos mencionados y "
-                    "necesidades recurrentes de los clientes.\n\n"
-                    f"CONVERSACIONES DEL DÍA:\n{contexto_texto}"
+                "content": DECISIONES_USER_PROMPT.format(
+                    conversaciones=f"CONVERSACIONES DEL DÍA:\n{contexto_texto}"
                 )
             }]
         )
@@ -414,14 +432,11 @@ def procesar_texto():
         system_prompt    = construir_system_prompt(perfil)
         respuesta = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=2048,
             system=system_prompt,
             messages=[{
                 "role": "user",
-                "content": (
-                    f"Analizá esta situación del negocio y generá exactamente 5 decisiones concretas "
-                    f"basadas en lo que te escriben:\n\n{texto}"
-                )
+                "content": DECISIONES_USER_PROMPT.format(conversaciones=texto)
             }]
         )
         decisiones = respuesta.content[0].text

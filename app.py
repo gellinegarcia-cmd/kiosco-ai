@@ -53,6 +53,27 @@ Podés incluir más de una decisión por categoría si hay varias situaciones re
 CONVERSACIONES:
 {conversaciones}"""
 
+WEEKLY_SYSTEM_PROMPT = """\
+Sos Gelline, el socio silencioso de un negocio argentino. Analizaste toda la semana y ahora le contás al dueño lo más importante en 3 secciones.
+
+Hablás en español rioplatense, directo y cálido. Sin jerga tecnológica.
+
+FORMATO OBLIGATORIO — respondé ÚNICAMENTE con este formato, sin texto antes ni después:
+
+## LO QUE TE PERDISTE
+Lista de 3 a 5 oportunidades perdidas esta semana con números concretos. Productos sin stock que se pidieron, ventas que se fueron, quejas repetidas. Que duela. Ejemplo: "Rayuela se pidió 4 veces y no había stock."
+
+## LO QUE FUNCIONÓ
+Lista de 3 a 5 cosas que salieron bien. Productos más vendidos, horarios pico, clientes que volvieron, interacciones positivas. Que genere orgullo.
+
+## LAS 3 COSAS PARA HACER ESTA SEMANA
+### 1. Acción concreta con verbo y fecha
+Una oración explicando por qué.
+### 2. Acción concreta con verbo y fecha
+Una oración explicando por qué.
+### 3. Acción concreta con verbo y fecha
+Una oración explicando por qué."""
+
 
 # ── Helpers generales ─────────────────────────────────────────────────────────
 
@@ -178,36 +199,71 @@ def calcular_debe_grabar(cfg):
 
 def get_filas_hoy(ws):
     """Devuelve las filas de hoy como lista de [timestamp, transcripcion]."""
-    hoy = date.today().isoformat()          # "2026-06-09"
+    hoy = date.today().isoformat()
     todas = ws.get_all_values()
-    # Saltar fila de encabezado
     datos = todas[1:] if todas and todas[0][0].lower() == "timestamp" else todas
     return [f for f in datos if len(f) >= 2 and f[0].startswith(hoy)]
 
 
+def get_filas_semana(ws):
+    """Devuelve las filas de los últimos 7 días como lista de [timestamp, transcripcion]."""
+    hoy = date.today()
+    fechas = {(hoy - timedelta(days=i)).isoformat() for i in range(7)}
+    todas = ws.get_all_values()
+    datos = todas[1:] if todas and todas[0][0].lower() == "timestamp" else todas
+    return [f for f in datos if len(f) >= 2 and any(f[0].startswith(d) for d in fechas)]
+
+
+def get_decisiones_semana_sheet():
+    """Devuelve la hoja 'decisiones_semana', creándola con encabezado si no existe."""
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        return spreadsheet.worksheet("decisiones_semana")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="decisiones_semana", rows=100, cols=2)
+        ws.append_row(["timestamp", "informe"])
+        return ws
+
+
 # ── Background para /analizar ─────────────────────────────────────────────────
 
-def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos):
+def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos, periodo="hoy"):
+    tag = f"[/analizar {periodo}]"
     try:
         anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        print("[/analizar] Generando decisiones con Claude...", flush=True)
+        print(f"{tag} Generando decisiones con Claude...", flush=True)
+
+        if periodo == "semana":
+            user_content = (
+                "Acá están todas las conversaciones del negocio de los últimos 7 días. "
+                "Analizalas y generá el informe semanal.\n\n"
+                f"CONVERSACIONES DE LA SEMANA:\n{contexto_texto}"
+            )
+        else:
+            user_content = DECISIONES_USER_PROMPT.format(
+                conversaciones=f"CONVERSACIONES DEL DÍA:\n{contexto_texto}"
+            )
+
         respuesta = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2048,
             system=system_prompt,
-            messages=[{
-                "role": "user",
-                "content": DECISIONES_USER_PROMPT.format(
-                    conversaciones=f"CONVERSACIONES DEL DÍA:\n{contexto_texto}"
-                )
-            }]
+            messages=[{"role": "user", "content": user_content}]
         )
         decisiones = respuesta.content[0].text
-        with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
-            f.write(decisiones)
-        print(f"[/analizar] OK — {n_fragmentos} fragmentos analizados, decisiones guardadas", flush=True)
+
+        if periodo == "semana":
+            ws = get_decisiones_semana_sheet()
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ws.append_row([ts, decisiones])
+            print(f"{tag} OK — {n_fragmentos} fragmentos, informe guardado en Sheets", flush=True)
+        else:
+            with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
+                f.write(decisiones)
+            print(f"{tag} OK — {n_fragmentos} fragmentos, decisiones guardadas", flush=True)
     except Exception as e:
-        print(f"[/analizar] ERROR en background: {type(e).__name__}: {e}", flush=True)
+        print(f"{tag} ERROR en background: {type(e).__name__}: {e}", flush=True)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -350,35 +406,57 @@ def procesar_audio():
 
 @app.route("/analizar", methods=["GET"])
 def analizar():
-    print("[/analizar] Request recibido", flush=True)
+    periodo = request.args.get("periodo", "hoy")
+    print(f"[/analizar] Request recibido — periodo={periodo}", flush=True)
     try:
-        ws = get_sheet()
-        filas_hoy = get_filas_hoy(ws)
+        ws    = get_sheet()
+        filas = get_filas_semana(ws) if periodo == "semana" else get_filas_hoy(ws)
     except Exception as e:
         print(f"[/analizar] ERROR leyendo Sheets: {type(e).__name__}: {e}", flush=True)
         return jsonify({"error": f"Error accediendo a Google Sheets: {e}"}), 500
 
-    if not filas_hoy:
-        return jsonify({"error": "No hay contexto acumulado hoy."}), 404
+    if not filas:
+        label = "esta semana" if periodo == "semana" else "hoy"
+        return jsonify({"error": f"No hay contexto acumulado {label}."}), 404
 
-    if len(filas_hoy) > 50:
-        print(f"[/analizar] {len(filas_hoy)} fragmentos — limitando a los últimos 50", flush=True)
-        filas_hoy = filas_hoy[-50:]
+    limite = 200 if periodo == "semana" else 50
+    if len(filas) > limite:
+        print(f"[/analizar] {len(filas)} fragmentos — limitando a {limite}", flush=True)
+        filas = filas[-limite:]
 
-    n = len(filas_hoy)
-    contexto_texto = "\n".join(f"[{f[0]}] {f[1]}" for f in filas_hoy)
-    print(f"[/analizar] Analizando {n} fragmentos en background", flush=True)
+    n             = len(filas)
+    contexto_texto = "\n".join(f"[{f[0]}] {f[1]}" for f in filas)
+    print(f"[/analizar] Analizando {n} fragmentos en background (periodo={periodo})", flush=True)
 
-    perfil       = parse_perfil(request.args.get("perfil"))
-    system_prompt = construir_system_prompt(perfil)
+    if periodo == "semana":
+        system_prompt = WEEKLY_SYSTEM_PROMPT
+    else:
+        system_prompt = construir_system_prompt(parse_perfil(request.args.get("perfil")))
 
     threading.Thread(
         target=_analizar_en_background,
-        args=(contexto_texto, system_prompt, n),
+        args=(contexto_texto, system_prompt, n, periodo),
         daemon=True
     ).start()
 
-    return jsonify({"status": "procesando", "fragmentos": n})
+    return jsonify({"status": "procesando", "fragmentos": n, "periodo": periodo})
+
+
+@app.route("/contexto", methods=["POST"])
+def agregar_contexto():
+    """Inserta una transcripción directamente en Sheets (útil para tests y simulación)."""
+    data      = request.get_json(silent=True) or {}
+    texto     = data.get("texto", "").strip()
+    timestamp = data.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if not texto:
+        return jsonify({"error": "Falta el campo 'texto'."}), 400
+    try:
+        ws = get_sheet()
+        ws.append_row([timestamp, texto])
+        print(f"[/contexto POST] Insertado: [{timestamp}] {texto[:60]}", flush=True)
+        return jsonify({"ok": True, "timestamp": timestamp})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/contexto", methods=["GET"])
@@ -449,6 +527,22 @@ def procesar_texto():
 
 @app.route("/decisiones", methods=["GET"])
 def get_decisiones():
+    periodo = request.args.get("periodo", "hoy")
+
+    if periodo == "semana":
+        try:
+            ws    = get_decisiones_semana_sheet()
+            todas = ws.get_all_values()
+            datos = todas[1:] if len(todas) > 1 else []
+            if not datos:
+                return jsonify({"decisiones": None, "mensaje": "No hay informe semanal aún."}), 404
+            ultimo = datos[-1]
+            if len(ultimo) < 2 or not ultimo[1].strip():
+                return jsonify({"decisiones": None, "mensaje": "No hay informe semanal aún."}), 404
+            return jsonify({"decisiones": ultimo[1], "timestamp": ultimo[0]})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     if not os.path.exists(DECISIONES_FILE):
         return jsonify({"decisiones": None, "mensaje": "No hay decisiones generadas aún."}), 404
     with open(DECISIONES_FILE, "r", encoding="utf-8") as f:

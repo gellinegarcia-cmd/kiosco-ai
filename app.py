@@ -55,25 +55,32 @@ CONVERSACIONES:
 {conversaciones}"""
 
 WEEKLY_SYSTEM_PROMPT = """\
-Sos Gelline, el socio silencioso de un negocio argentino. Analizaste toda la semana y ahora le contás al dueño lo más importante en 3 secciones.
+Sos Gelline, el socio silencioso de este negocio argentino. Hablás en español rioplatense, directo y cálido, sin jerga técnica. Sos el mismo Gelline del resumen diario.
 
-Hablás en español rioplatense, directo y cálido. Sin jerga tecnológica.
+Tu trabajo es detectar CAMBIOS respecto a patrones anteriores — no repetir información ya conocida. Si algo siempre fue igual, no lo menciones. Solo importa lo que es diferente.
+
+Ignorá conversaciones que no son del negocio (charlas personales, TV, ruido).
 
 FORMATO OBLIGATORIO — respondé ÚNICAMENTE con este formato, sin texto antes ni después:
 
-## LO QUE TE PERDISTE
-Lista de 3 a 5 oportunidades perdidas esta semana con números concretos. Productos sin stock que se pidieron, ventas que se fueron, quejas repetidas. Que duela. Ejemplo: "Rayuela se pidió 4 veces y no había stock."
+## LO QUE CAMBIÓ
+3 a 5 cosas que cambiaron esta semana respecto a lo normal: productos que dejaron de pedirse, quejas nuevas, caídas o subas de actividad en algún horario, algo que antes funcionaba y ahora no. Si tenés el informe de la semana anterior, compará explícitamente.
 
-## LO QUE FUNCIONÓ
-Lista de 3 a 5 cosas que salieron bien. Productos más vendidos, horarios pico, clientes que volvieron, interacciones positivas. Que genere orgullo.
+## LO QUE SE MANTIENE FUERTE
+3 a 5 cosas que siguen funcionando bien, igual o mejor que antes. Lo que no hay que tocar.
 
-## LAS 3 COSAS PARA HACER ESTA SEMANA
+## 3 ACCIONES PARA ESTA SEMANA
 ### 1. Acción concreta con verbo y fecha
-Una oración explicando por qué.
+Una oración explicando por qué, conectada a lo que cambió.
 ### 2. Acción concreta con verbo y fecha
 Una oración explicando por qué.
 ### 3. Acción concreta con verbo y fecha
 Una oración explicando por qué."""
+
+WEEKLY_SYSTEM_PROMPT_PRIMERA_SEMANA = WEEKLY_SYSTEM_PROMPT + (
+    "\n\nEsta es la primera semana, no hay informe anterior para comparar — "
+    "usá el formato pero la sección LO QUE CAMBIÓ puede estar vacía o decir que es la línea de base."
+)
 
 
 # ── Helpers generales ─────────────────────────────────────────────────────────
@@ -227,20 +234,36 @@ def get_decisiones_semana_sheet():
         return ws
 
 
+def get_ultimo_informe_semanal():
+    """Devuelve el texto del último informe semanal guardado, o None si no hay ninguno."""
+    try:
+        ws = get_decisiones_semana_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        if not datos:
+            return None
+        return datos[-1][1] if len(datos[-1]) >= 2 else None
+    except Exception as e:
+        print(f"[get_ultimo_informe_semanal] ERROR: {e}", flush=True)
+        return None
+
+
 # ── Background para /analizar ─────────────────────────────────────────────────
 
-def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos, periodo="hoy"):
+def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos, periodo="hoy", informe_anterior=None):
     tag = f"[/analizar {periodo}]"
     try:
         anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         print(f"{tag} Generando decisiones con Claude...", flush=True)
 
         if periodo == "semana":
-            user_content = (
-                "Acá están todas las conversaciones del negocio de los últimos 7 días. "
-                "Analizalas y generá el informe semanal.\n\n"
-                f"CONVERSACIONES DE LA SEMANA:\n{contexto_texto}"
-            )
+            if informe_anterior:
+                user_content = (
+                    f"INFORME DE LA SEMANA ANTERIOR:\n{informe_anterior}\n\n"
+                    f"CONVERSACIONES DE ESTA SEMANA:\n{contexto_texto}"
+                )
+            else:
+                user_content = f"CONVERSACIONES DE ESTA SEMANA:\n{contexto_texto}"
         else:
             user_content = DECISIONES_USER_PROMPT.format(
                 conversaciones=f"CONVERSACIONES DEL DÍA:\n{contexto_texto}"
@@ -430,13 +453,15 @@ def analizar():
     print(f"[/analizar] Analizando {n} fragmentos en background (periodo={periodo})", flush=True)
 
     if periodo == "semana":
-        system_prompt = WEEKLY_SYSTEM_PROMPT
+        informe_anterior = get_ultimo_informe_semanal()
+        system_prompt = WEEKLY_SYSTEM_PROMPT if informe_anterior else WEEKLY_SYSTEM_PROMPT_PRIMERA_SEMANA
     else:
+        informe_anterior = None
         system_prompt = construir_system_prompt(parse_perfil(request.args.get("perfil")))
 
     threading.Thread(
         target=_analizar_en_background,
-        args=(contexto_texto, system_prompt, n, periodo),
+        args=(contexto_texto, system_prompt, n, periodo, informe_anterior),
         daemon=True
     ).start()
 

@@ -33,33 +33,30 @@ REGLAS:
 - CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores. Si una palabra no tiene sentido como producto o término del rubro de este negocio, pero suena parecida (fonéticamente) a un producto o término que SÍ es típico de ese rubro, asumí que es un error de transcripción y usá el término correcto en tu análisis. No generes decisiones sobre productos que no existen en el rubro."""
 
 DECISIONES_USER_PROMPT = """\
-Analizá las conversaciones del negocio y generá decisiones accionables organizadas en estas tres categorías, usando exactamente este formato para cada una:
+Analizá las conversaciones del negocio y generá exactamente este formato, sin texto antes ni después:
 
-### urgente
-💔 **Lo que pasó:** [situación concreta detectada]
-💡 **Lo que podés hacer:** [acción específica realizable hoy o mañana]
-✅ **La decisión:** [resumen en una oración]
+**Urgente**
+[qué pasó, que duela de verdad — cuantificá si es posible]
+→ [una sola acción concreta y ejecutable, con cuándo hacerla]
 
-### importante
-💔 **Lo que pasó:** [situación concreta detectada]
-💡 **Lo que podés hacer:** [acción para esta semana]
-✅ **La decisión:** [resumen en una oración]
+**Importante**
+[patrón que se repite, con evidencia concreta]
+→ [acción concreta para esta semana]
 
-### reflexión
-💔 **Lo que pasó:** [patrón o situación estructural]
-💡 **Lo que podés hacer:** [cambio a mediano plazo]
-✅ **La decisión:** [resumen en una oración]
+**Reflexión**
+[situación estructural]
+→ [cambio concreto a mediano plazo]
 
-Generá exactamente una decisión por categoría — nunca más de 3 en total. Si hay varias situaciones urgentes, elegí la de mayor impacto económico y dejá el resto para el informe semanal.
+**Lo que funcionó**
+[Una frase corta reconociendo algo concreto que salió bien hoy. Omitir esta sección si no hay evidencia real.]
 
-Después de las 3 decisiones, agregá esta sección SOLO si hay evidencia real y concreta en las conversaciones:
-
-### lo que funcionó
-✨ [Una frase corta y concreta reconociendo algo que salió bien hoy, basado en evidencia real de las conversaciones — una venta fluida, una buena respuesta a un cliente, un producto que se vendió sin objeciones. Específico, no genérico.]
-
-Si no hay nada claro que destacar, omitir esta sección completamente. No inventar reconocimientos genéricos.
-
-No agregues título general, texto introductorio ni conclusión al final.
+Reglas:
+- Exactamente 1 bloque por categoría Urgente/Importante/Reflexión — 3 en total.
+- Si hay varias situaciones urgentes, elegí la de mayor impacto económico.
+- "Lo que funcionó" es opcional: solo incluirla si hay evidencia concreta. No inventar reconocimientos genéricos.
+- Sin emojis. El símbolo → marca siempre la acción a tomar.
+- Sin headers markdown (###). Sin las palabras "Dolor" ni "Solución".
+- Sin título general, texto introductorio ni conclusión al final.
 
 CONVERSACIONES:
 {conversaciones}"""
@@ -82,12 +79,12 @@ FORMATO OBLIGATORIO — respondé ÚNICAMENTE con este formato, sin texto antes 
 3 a 5 cosas que siguen funcionando bien, igual o mejor que antes. Lo que no hay que tocar.
 
 ## 3 ACCIONES PARA ESTA SEMANA
-### 1. Acción concreta con verbo y fecha
-Una oración explicando por qué, conectada a lo que cambió.
-### 2. Acción concreta con verbo y fecha
-Una oración explicando por qué.
-### 3. Acción concreta con verbo y fecha
-Una oración explicando por qué."""
+**1. Acción concreta con verbo y fecha**
+→ Una oración explicando por qué, conectada a lo que cambió.
+**2. Acción concreta con verbo y fecha**
+→ Una oración explicando por qué.
+**3. Acción concreta con verbo y fecha**
+→ Una oración explicando por qué."""
 
 WEEKLY_SYSTEM_PROMPT_PRIMERA_SEMANA = WEEKLY_SYSTEM_PROMPT + (
     "\n\nEsta es la primera semana, no hay informe anterior para comparar — "

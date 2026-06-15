@@ -36,34 +36,34 @@ REGLAS:
 DECISIONES_USER_PROMPT = """\
 Analizá las conversaciones del negocio y generá exactamente este formato, sin texto antes ni después:
 
-### Rojo — Actuá hoy
+### Plata que se te escapa hoy
 
-[El dolor más urgente del día. Tiene que sentirse REAL y ESPECÍFICO — no "falta stock", sino la escena concreta: qué pidió el cliente, qué pasó, qué se perdió, a qué hora, cuántas veces. Como contar una anécdota puntual que duele porque es verdad. Máximo 2 líneas.]
+[UNA SOLA FRASE corta tipo titular de diario, máximo 20 palabras. Tiene que doler. Ejemplo de estilo: "Hoy se fueron dos ventas por la puerta: el cliente quería A4 y cidrex de colores, y no tenías ninguno de los dos."]
 
-**Hacé esto:** [una sola acción concreta, ejecutable hoy o mañana, con cuándo]
+**Hacé esto:** [UNA orden directa con verbo imperativo, máximo 15 palabras. Ejemplo: "Llamá al proveedor ahora y sumá A4 y cidrex de colores al pedido del miércoles."]
 
-### Amarillo — Esta semana
+### Esto se viene repitiendo
 
-[Un patrón que se repite, con evidencia específica de cuántas veces y cuándo. Igual de concreto que el anterior, máximo 2 líneas.]
+[UNA SOLA FRASE corta tipo titular, máximo 20 palabras, con la evidencia de que se repite.]
 
-**Hacé esto:** [acción concreta para esta semana]
+**Hacé esto:** [UNA orden directa, máximo 15 palabras.]
 
-### Verde — Para pensar
+### Para que no te vuelva a pasar
 
-[Una situación estructural, de mediano plazo. Concreta, no genérica. Máximo 2 líneas.]
+[UNA SOLA FRASE corta tipo titular, máximo 20 palabras, sobre la causa estructural.]
 
-**Hacé esto:** [cambio o decisión a evaluar, sin urgencia]
+**Hacé esto:** [UNA orden o sugerencia directa, máximo 15 palabras.]
 
 ### Lo que funcionó
 
-[Una palmadita en la espalda: algo específico que salió bien hoy, con evidencia real de la conversación — qué hizo el vendedor o qué pasó que estuvo bien. Si no hay nada concreto que destacar, omitir TODA esta sección incluyendo el título.]
+[UNA SOLA FRASE corta, máximo 20 palabras, reconociendo algo concreto que salió bien. Si no hay nada concreto, omitir TODA la sección incluyendo el título.]
 
-REGLAS:
-- El dolor debe sentirse como una escena real, no una categoría abstracta — específico en detalles (qué, cuándo, cuántas veces)
-- "Hacé esto:" siempre en negrita exacta, una sola acción por bloque
+REGLAS ESTRICTAS:
+- Cada frase es UNA oración, no un párrafo. Si tenés mucha información, elegí lo más importante y descartá el resto.
+- "Hacé esto:" es una ORDEN, no una explicación — empieza con verbo (Llamá, Revisá, Armá, Pedí, etc.)
 - Sin emojis
-- Exactamente 1 bloque por color (Rojo/Amarillo/Verde) — 3 en total, más "Lo que funcionó" si aplica
-- Línea vacía entre el párrafo del dolor y la línea "Hacé esto:"
+- Exactamente esos 3 títulos en ese orden, más "Lo que funcionó" si aplica
+- Línea vacía real entre el titular y "Hacé esto:"
 
 CONVERSACIONES:
 {conversaciones}"""
@@ -87,23 +87,23 @@ FORMATO OBLIGATORIO — respondé ÚNICAMENTE con este formato, sin texto antes 
 
 ## 3 ACCIONES PARA ESTA SEMANA
 
-### 1. [Acción concreta con verbo y fecha]
+### 1. [Titular corto, máximo 10 palabras, que resume el problema o la oportunidad]
 
-[Una escena real de lo que pasó esta semana que justifica esta acción — específico, que duela o que ilusione. Máximo 2 líneas.]
+[UNA SOLA FRASE tipo titular, máximo 20 palabras, con la evidencia concreta de esta semana que justifica la acción.]
 
-**Hacé esto:** [acción concreta con cuándo]
+**Hacé esto:** [UNA orden directa con verbo imperativo, máximo 15 palabras, con cuándo.]
 
-### 2. [Acción concreta con verbo y fecha]
+### 2. [Titular corto, máximo 10 palabras]
 
-[Evidencia concreta de esta semana que justifica esta acción. Máximo 2 líneas.]
+[UNA SOLA FRASE tipo titular, máximo 20 palabras, con evidencia concreta.]
 
-**Hacé esto:** [acción concreta con cuándo]
+**Hacé esto:** [UNA orden directa con verbo imperativo, máximo 15 palabras, con cuándo.]
 
-### 3. [Acción concreta con verbo y fecha]
+### 3. [Titular corto, máximo 10 palabras]
 
-[Evidencia concreta de esta semana que justifica esta acción. Máximo 2 líneas.]
+[UNA SOLA FRASE tipo titular, máximo 20 palabras, con evidencia concreta.]
 
-**Hacé esto:** [acción concreta con cuándo]
+**Hacé esto:** [UNA orden directa con verbo imperativo, máximo 15 palabras, con cuándo.]
 
 NUNCA hagas preguntas ni pidas confirmación al usuario. Siempre asumí el rubro y contexto del negocio a partir de las conversaciones disponibles y generá el análisis completo en el formato pedido, sin excepciones."""
 

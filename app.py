@@ -30,7 +30,7 @@ REGLAS:
 - Ignorá conversaciones que no son del negocio (charlas personales, TV, ruido)
 - Priorizá por impacto económico
 - Generá EXACTAMENTE 3 decisiones: una urgente, una importante, una de reflexión — nunca más de una por categoría
-- CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores. Si una palabra no tiene sentido como producto o término del rubro de este negocio, pero suena parecida (fonéticamente) a un producto o término que SÍ es típico de ese rubro, asumí que es un error de transcripción y usá el término correcto en tu análisis. No generes decisiones sobre productos que no existen en el rubro.
+- CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores. Si una palabra no tiene sentido como producto o término del rubro de este negocio, pero suena parecida (fonéticamente) a un producto o término que SÍ es típico de ese rubro, asumí que es un error de transcripción y usá el término correcto en tu análisis. Inferí el rubro directamente del contexto de las conversaciones — nunca lo pidas al usuario, nunca te detengas a confirmar. Generá el análisis completo siempre.
 - NUNCA hagas preguntas ni pidas confirmación al usuario. Siempre asumí el rubro y contexto del negocio a partir de las conversaciones disponibles y generá el análisis completo en el formato pedido, sin excepciones."""
 
 DECISIONES_USER_PROMPT = """\
@@ -75,7 +75,7 @@ Tu trabajo es detectar CAMBIOS respecto a patrones anteriores — no repetir inf
 
 Ignorá conversaciones que no son del negocio (charlas personales, TV, ruido).
 
-CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores. Si una palabra no tiene sentido como producto o término del rubro de este negocio, pero suena parecida (fonéticamente) a un producto o término que SÍ es típico de ese rubro, asumí que es un error de transcripción y usá el término correcto en tu análisis. No generes decisiones sobre productos que no existen en el rubro.
+CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores. Si una palabra no tiene sentido como producto o término del rubro de este negocio, pero suena parecida (fonéticamente) a un producto o término que SÍ es típico de ese rubro, asumí que es un error de transcripción y usá el término correcto en tu análisis. Inferí el rubro directamente del contexto de las conversaciones — nunca lo pidas al usuario, nunca te detengas a confirmar. Generá el análisis completo siempre.
 
 FORMATO OBLIGATORIO — respondé ÚNICAMENTE con este formato, sin texto antes ni después:
 

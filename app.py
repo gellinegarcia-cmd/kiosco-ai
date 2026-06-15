@@ -35,28 +35,34 @@ REGLAS:
 DECISIONES_USER_PROMPT = """\
 Analizá las conversaciones del negocio y generá exactamente este formato, sin texto antes ni después:
 
-**Urgente**
-[qué pasó, que duela de verdad — cuantificá si es posible]
-→ [una sola acción concreta y ejecutable, con cuándo hacerla]
+### Rojo — Actuá hoy
 
-**Importante**
-[patrón que se repite, con evidencia concreta]
-→ [acción concreta para esta semana]
+[El dolor más urgente del día. Tiene que sentirse REAL y ESPECÍFICO — no "falta stock", sino la escena concreta: qué pidió el cliente, qué pasó, qué se perdió, a qué hora, cuántas veces. Como contar una anécdota puntual que duele porque es verdad. Máximo 2 líneas.]
 
-**Reflexión**
-[situación estructural]
-→ [cambio concreto a mediano plazo]
+**Hacé esto:** [una sola acción concreta, ejecutable hoy o mañana, con cuándo]
 
-**Lo que funcionó**
-[Una frase corta reconociendo algo concreto que salió bien hoy. Omitir esta sección si no hay evidencia real.]
+### Amarillo — Esta semana
 
-Reglas:
-- Exactamente 1 bloque por categoría Urgente/Importante/Reflexión — 3 en total.
-- Si hay varias situaciones urgentes, elegí la de mayor impacto económico.
-- "Lo que funcionó" es opcional: solo incluirla si hay evidencia concreta. No inventar reconocimientos genéricos.
-- Sin emojis. El símbolo → marca siempre la acción a tomar.
-- Sin headers markdown (###). Sin las palabras "Dolor" ni "Solución".
-- Sin título general, texto introductorio ni conclusión al final.
+[Un patrón que se repite, con evidencia específica de cuántas veces y cuándo. Igual de concreto que el anterior, máximo 2 líneas.]
+
+**Hacé esto:** [acción concreta para esta semana]
+
+### Verde — Para pensar
+
+[Una situación estructural, de mediano plazo. Concreta, no genérica. Máximo 2 líneas.]
+
+**Hacé esto:** [cambio o decisión a evaluar, sin urgencia]
+
+### Lo que funcionó
+
+[Una palmadita en la espalda: algo específico que salió bien hoy, con evidencia real de la conversación — qué hizo el vendedor o qué pasó que estuvo bien. Si no hay nada concreto que destacar, omitir TODA esta sección incluyendo el título.]
+
+REGLAS:
+- El dolor debe sentirse como una escena real, no una categoría abstracta — específico en detalles (qué, cuándo, cuántas veces)
+- "Hacé esto:" siempre en negrita exacta, una sola acción por bloque
+- Sin emojis
+- Exactamente 1 bloque por color (Rojo/Amarillo/Verde) — 3 en total, más "Lo que funcionó" si aplica
+- Línea vacía entre el párrafo del dolor y la línea "Hacé esto:"
 
 CONVERSACIONES:
 {conversaciones}"""
@@ -79,12 +85,24 @@ FORMATO OBLIGATORIO — respondé ÚNICAMENTE con este formato, sin texto antes 
 3 a 5 cosas que siguen funcionando bien, igual o mejor que antes. Lo que no hay que tocar.
 
 ## 3 ACCIONES PARA ESTA SEMANA
-**1. Acción concreta con verbo y fecha**
-→ Una oración explicando por qué, conectada a lo que cambió.
-**2. Acción concreta con verbo y fecha**
-→ Una oración explicando por qué.
-**3. Acción concreta con verbo y fecha**
-→ Una oración explicando por qué."""
+
+### 1. [Acción concreta con verbo y fecha]
+
+[Una escena real de lo que pasó esta semana que justifica esta acción — específico, que duela o que ilusione. Máximo 2 líneas.]
+
+**Hacé esto:** [acción concreta con cuándo]
+
+### 2. [Acción concreta con verbo y fecha]
+
+[Evidencia concreta de esta semana que justifica esta acción. Máximo 2 líneas.]
+
+**Hacé esto:** [acción concreta con cuándo]
+
+### 3. [Acción concreta con verbo y fecha]
+
+[Evidencia concreta de esta semana que justifica esta acción. Máximo 2 líneas.]
+
+**Hacé esto:** [acción concreta con cuándo]"""
 
 WEEKLY_SYSTEM_PROMPT_PRIMERA_SEMANA = WEEKLY_SYSTEM_PROMPT + (
     "\n\nEsta es la primera semana, no hay informe anterior para comparar — "

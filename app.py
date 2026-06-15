@@ -50,7 +50,16 @@ Analizá las conversaciones del negocio y generá decisiones accionables organiz
 💡 **Lo que podés hacer:** [cambio a mediano plazo]
 ✅ **La decisión:** [resumen en una oración]
 
-Generá exactamente una decisión por categoría — nunca más de 3 en total. Si hay varias situaciones urgentes, elegí la de mayor impacto económico y dejá el resto para el informe semanal. No agregues título general, texto introductorio ni conclusión al final.
+Generá exactamente una decisión por categoría — nunca más de 3 en total. Si hay varias situaciones urgentes, elegí la de mayor impacto económico y dejá el resto para el informe semanal.
+
+Después de las 3 decisiones, agregá esta sección SOLO si hay evidencia real y concreta en las conversaciones:
+
+### lo que funcionó
+✨ [Una frase corta y concreta reconociendo algo que salió bien hoy, basado en evidencia real de las conversaciones — una venta fluida, una buena respuesta a un cliente, un producto que se vendió sin objeciones. Específico, no genérico.]
+
+Si no hay nada claro que destacar, omitir esta sección completamente. No inventar reconocimientos genéricos.
+
+No agregues título general, texto introductorio ni conclusión al final.
 
 CONVERSACIONES:
 {conversaciones}"""

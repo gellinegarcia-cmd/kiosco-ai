@@ -551,6 +551,35 @@ def procesar_texto():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/admin/limpiar-sheets", methods=["POST"])
+def limpiar_sheets():
+    """Borra todas las filas de datos de Sheet1 y decisiones_semana, dejando solo encabezados."""
+    try:
+        client = _gspread_client()
+        spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+
+        ws1 = spreadsheet.sheet1
+        todas1 = ws1.get_all_values()
+        if len(todas1) > 1:
+            ws1.delete_rows(2, len(todas1))
+        n1 = len(todas1) - 1
+
+        try:
+            ws2 = spreadsheet.worksheet("decisiones_semana")
+            todas2 = ws2.get_all_values()
+            if len(todas2) > 1:
+                ws2.delete_rows(2, len(todas2))
+            n2 = len(todas2) - 1
+        except gspread.exceptions.WorksheetNotFound:
+            n2 = 0
+
+        print(f"[/admin/limpiar-sheets] Sheet1: {n1} filas borradas, decisiones_semana: {n2} filas borradas", flush=True)
+        return jsonify({"ok": True, "sheet1_borradas": n1, "decisiones_semana_borradas": n2})
+    except Exception as e:
+        print(f"[/admin/limpiar-sheets] ERROR: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/decisiones", methods=["GET"])
 def get_decisiones():
     periodo = request.args.get("periodo", "hoy")

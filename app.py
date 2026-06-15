@@ -30,7 +30,8 @@ REGLAS:
 - Ignorá conversaciones que no son del negocio (charlas personales, TV, ruido)
 - Priorizá por impacto económico
 - Generá EXACTAMENTE 3 decisiones: una urgente, una importante, una de reflexión — nunca más de una por categoría
-- CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores. Si una palabra no tiene sentido como producto o término del rubro de este negocio, pero suena parecida (fonéticamente) a un producto o término que SÍ es típico de ese rubro, asumí que es un error de transcripción y usá el término correcto en tu análisis. No generes decisiones sobre productos que no existen en el rubro."""
+- CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores. Si una palabra no tiene sentido como producto o término del rubro de este negocio, pero suena parecida (fonéticamente) a un producto o término que SÍ es típico de ese rubro, asumí que es un error de transcripción y usá el término correcto en tu análisis. No generes decisiones sobre productos que no existen en el rubro.
+- NUNCA hagas preguntas ni pidas confirmación al usuario. Siempre asumí el rubro y contexto del negocio a partir de las conversaciones disponibles y generá el análisis completo en el formato pedido, sin excepciones."""
 
 DECISIONES_USER_PROMPT = """\
 Analizá las conversaciones del negocio y generá exactamente este formato, sin texto antes ni después:
@@ -102,7 +103,9 @@ FORMATO OBLIGATORIO — respondé ÚNICAMENTE con este formato, sin texto antes 
 
 [Evidencia concreta de esta semana que justifica esta acción. Máximo 2 líneas.]
 
-**Hacé esto:** [acción concreta con cuándo]"""
+**Hacé esto:** [acción concreta con cuándo]
+
+NUNCA hagas preguntas ni pidas confirmación al usuario. Siempre asumí el rubro y contexto del negocio a partir de las conversaciones disponibles y generá el análisis completo en el formato pedido, sin excepciones."""
 
 WEEKLY_SYSTEM_PROMPT_PRIMERA_SEMANA = WEEKLY_SYSTEM_PROMPT + (
     "\n\nEsta es la primera semana, no hay informe anterior para comparar — "

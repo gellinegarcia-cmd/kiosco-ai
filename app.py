@@ -162,6 +162,17 @@ CONFIG_DEFAULTS = {
     "saludo_automatico":  "false",
 }
 
+DIAS_SEMANA = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+
+HORARIOS_HEADERS = ["dia", "tipo", "cerrado", "apertura", "cierre", "siesta", "siesta_inicio", "siesta_fin"]
+
+HORARIOS_DEFAULTS = [
+    {"dia": d, "tipo": "general", "cerrado": "false",
+     "apertura": "09:00", "cierre": "20:00",
+     "siesta": "false", "siesta_inicio": "13:00", "siesta_fin": "14:00"}
+    for d in DIAS_SEMANA
+]
+
 
 def _gspread_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
@@ -199,6 +210,37 @@ def get_config_sheet():
     return ws
 
 
+def get_horarios_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("horarios_semana")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="horarios_semana", rows=10, cols=len(HORARIOS_HEADERS))
+        ws.append_row(HORARIOS_HEADERS)
+        for d in HORARIOS_DEFAULTS:
+            ws.append_row([d[h] for h in HORARIOS_HEADERS])
+    return ws
+
+
+def leer_horarios(ws):
+    todas = ws.get_all_values()
+    if len(todas) < 2:
+        return {d["dia"]: d for d in HORARIOS_DEFAULTS}
+    headers = todas[0]
+    result = {}
+    for fila in todas[1:]:
+        row = {headers[i]: (fila[i] if i < len(fila) else "") for i in range(len(headers))}
+        result[row.get("dia", "")] = row
+    return result
+
+
+def get_dia_hoy():
+    tz_ar = timezone(timedelta(hours=-3))
+    idx = datetime.now(tz_ar).weekday()
+    return DIAS_SEMANA[idx]
+
+
 def leer_config(ws):
     """Lee la fila de valores de la hoja config y devuelve un dict."""
     todas = ws.get_all_values()
@@ -210,28 +252,38 @@ def leer_config(ws):
             for i, h in enumerate(headers)}
 
 
-def calcular_debe_grabar(cfg):
-    """Devuelve True si el asistente debe estar grabando ahora (hora Argentina)."""
+def calcular_debe_grabar(cfg, horarios=None):
     if cfg.get("activo", "false").lower() != "true":
         return False
-
     tz_ar = timezone(timedelta(hours=-3))
     ahora = datetime.now(tz_ar)
-    cur   = ahora.hour * 60 + ahora.minute
-
+    cur = ahora.hour * 60 + ahora.minute
     def hm(t):
-        h, m = t.split(":")
-        return int(h) * 60 + int(m)
-
-    if not (hm(cfg.get("hora_apertura", "09:00")) <= cur
-            < hm(cfg.get("hora_cierre", "20:00"))):
-        return False
-
-    if cfg.get("descanso", "false").lower() == "true":
-        if (hm(cfg.get("hora_siesta_inicio", "13:00")) <= cur
-                < hm(cfg.get("hora_siesta_fin", "14:00"))):
+        try:
+            h, m = t.split(":")
+            return int(h) * 60 + int(m)
+        except Exception:
+            return 0
+    horario_hoy = None
+    if horarios:
+        dia_hoy = get_dia_hoy()
+        entrada = horarios.get(dia_hoy, {})
+        if entrada.get("tipo", "general") != "general":
+            horario_hoy = entrada
+    if horario_hoy:
+        if horario_hoy.get("cerrado", "false").lower() == "true":
             return False
-
+        if not (hm(horario_hoy.get("apertura", "09:00")) <= cur < hm(horario_hoy.get("cierre", "20:00"))):
+            return False
+        if horario_hoy.get("siesta", "false").lower() == "true":
+            if hm(horario_hoy.get("siesta_inicio", "13:00")) <= cur < hm(horario_hoy.get("siesta_fin", "14:00")):
+                return False
+    else:
+        if not (hm(cfg.get("hora_apertura", "09:00")) <= cur < hm(cfg.get("hora_cierre", "20:00"))):
+            return False
+        if cfg.get("descanso", "false").lower() == "true":
+            if hm(cfg.get("hora_siesta_inicio", "13:00")) <= cur < hm(cfg.get("hora_siesta_fin", "14:00")):
+                return False
     return True
 
 
@@ -351,7 +403,7 @@ def get_config():
         "descanso_inicio":   cfg.get("hora_siesta_inicio", "13:00"),
         "descanso_fin":      cfg.get("hora_siesta_fin",    "14:00"),
         "saludo_automatico": b("saludo_automatico"),
-        "debe_grabar":       calcular_debe_grabar(cfg),
+        "debe_grabar":       calcular_debe_grabar(cfg, leer_horarios(get_horarios_sheet())),
         "es_dispositivo":    ua.startswith("okhttp"),
     })
 
@@ -633,3 +685,56 @@ def get_decisiones():
     with open(DECISIONES_FILE, "r", encoding="utf-8") as f:
         contenido = f.read()
     return jsonify({"decisiones": contenido})
+
+
+@app.route("/horarios", methods=["GET"])
+def get_horarios():
+    try:
+        ws = get_horarios_sheet()
+        horarios = leer_horarios(ws)
+        return jsonify({"horarios": list(horarios.values())})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/horarios", methods=["POST"])
+def set_horarios():
+    data = request.get_json(silent=True) or {}
+    dias_data = data.get("horarios", [])
+    if not dias_data:
+        return jsonify({"error": "Falta el campo 'horarios'."}), 400
+    def bool_str(v):
+        return "true" if (v is True or str(v).lower() == "true") else "false"
+    try:
+        ws = get_horarios_sheet()
+        todas = ws.get_all_values()
+        headers = todas[0] if todas else HORARIOS_HEADERS
+        for dia_data in dias_data:
+            dia = dia_data.get("dia", "").lower()
+            if dia not in DIAS_SEMANA:
+                continue
+            nueva_fila = [
+                dia,
+                dia_data.get("tipo", "general"),
+                bool_str(dia_data.get("cerrado", False)),
+                dia_data.get("apertura", "09:00"),
+                dia_data.get("cierre", "20:00"),
+                bool_str(dia_data.get("siesta", False)),
+                dia_data.get("siesta_inicio", "13:00"),
+                dia_data.get("siesta_fin", "14:00"),
+            ]
+            fila_idx = None
+            for i, fila in enumerate(todas):
+                if i > 0 and fila and fila[0] == dia:
+                    fila_idx = i + 1
+                    break
+            if fila_idx:
+                col_fin = chr(ord("A") + len(headers) - 1)
+                ws.update(f"A{fila_idx}:{col_fin}{fila_idx}", [nueva_fila])
+            else:
+                ws.append_row(nueva_fila)
+        print(f"[/horarios POST] Guardados {len(dias_data)} días", flush=True)
+        ws2 = get_horarios_sheet()
+        return jsonify({"ok": True, "horarios": list(leer_horarios(ws2).values())})
+    except Exception as e:
+        print(f"[/horarios POST] ERROR: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500

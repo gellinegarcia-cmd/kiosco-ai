@@ -309,11 +309,15 @@ def calcular_debe_grabar(cfg, horarios=None):
 
 
 def get_filas_hoy(ws):
-    """Devuelve las filas de hoy como lista de [timestamp, transcripcion]."""
+    cached = cache_get('filas_hoy')
+    if cached is not None:
+        return cached
     hoy = date.today().isoformat()
     todas = ws.get_all_values()
     datos = todas[1:] if todas and todas[0][0].lower() == "timestamp" else todas
-    return [f for f in datos if len(f) >= 2 and f[0].startswith(hoy)]
+    result = [f for f in datos if len(f) >= 2 and f[0].startswith(hoy)]
+    cache_set('filas_hoy', result)
+    return result
 
 
 def get_filas_semana(ws):
@@ -516,6 +520,7 @@ def procesar_audio():
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ws = get_sheet()
             ws.append_row([timestamp, texto])
+            cache_del('filas_hoy')
             print(f"[/audio] Fila agregada a Google Sheets: [{timestamp}]", flush=True)
         else:
             print("[/audio] Transcripción vacía, no se guarda", flush=True)

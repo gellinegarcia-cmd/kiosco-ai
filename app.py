@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import tempfile
 import threading
 import openai
@@ -12,6 +13,21 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_cache = {}
+CACHE_TTL = 60  # segundos
+
+def cache_get(key):
+    entry = _cache.get(key)
+    if entry and time.time() - entry['ts'] < CACHE_TTL:
+        return entry['val']
+    return None
+
+def cache_set(key, val):
+    _cache[key] = {'val': val, 'ts': time.time()}
+
+def cache_del(key):
+    _cache.pop(key, None)
 
 app = Flask(__name__)
 CORS(app)
@@ -243,13 +259,18 @@ def get_dia_hoy():
 
 def leer_config(ws):
     """Lee la fila de valores de la hoja config y devuelve un dict."""
+    cached = cache_get('config')
+    if cached:
+        return cached
     todas = ws.get_all_values()
     if len(todas) < 2:
         return dict(CONFIG_DEFAULTS)
     headers = todas[0]
     valores = todas[1]
-    return {h: (valores[i] if i < len(valores) else CONFIG_DEFAULTS.get(h, ""))
-            for i, h in enumerate(headers)}
+    result = {h: (valores[i] if i < len(valores) else CONFIG_DEFAULTS.get(h, ""))
+              for i, h in enumerate(headers)}
+    cache_set('config', result)
+    return result
 
 
 def calcular_debe_grabar(cfg, horarios=None):
@@ -439,6 +460,7 @@ def set_config():
         else:
             ws.append_row(CONFIG_HEADERS)
             ws.append_row([nuevos[h] for h in CONFIG_HEADERS])
+        cache_del('config')
         print(f"[/config POST] Guardado: {nuevos}", flush=True)
     except Exception as e:
         print(f"[/config POST] ERROR: {type(e).__name__}: {e}", flush=True)

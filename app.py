@@ -738,3 +738,68 @@ def set_horarios():
     except Exception as e:
         print(f"[/horarios POST] ERROR: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/status", methods=["GET"])
+def admin_status():
+    try:
+        ws_config = get_config_sheet()
+        cfg = leer_config(ws_config)
+        ws_horarios = get_horarios_sheet()
+        horarios = leer_horarios(ws_horarios)
+        debe_grabar = calcular_debe_grabar(cfg, horarios)
+
+        tz_ar = timezone(timedelta(hours=-3))
+        ahora = datetime.now(tz_ar)
+        dia_hoy = get_dia_hoy()
+        horario_hoy = horarios.get(dia_hoy, {})
+
+        ws = get_sheet()
+        filas_hoy = get_filas_hoy(ws)
+        total_chars = sum(len(f[1]) for f in filas_hoy if len(f) >= 2)
+
+        primer_audio = filas_hoy[0][0] if filas_hoy else None
+        ultimo_audio = filas_hoy[-1][0] if filas_hoy else None
+
+        return jsonify({
+            "timestamp": ahora.strftime("%Y-%m-%d %H:%M:%S"),
+            "debe_grabar": debe_grabar,
+            "activo": cfg.get("activo", "false").lower() == "true",
+            "dia_hoy": dia_hoy,
+            "horario_hoy": horario_hoy,
+            "fragmentos_hoy": len(filas_hoy),
+            "chars_hoy": total_chars,
+            "primer_audio": primer_audio,
+            "ultimo_audio": ultimo_audio,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/transcripciones", methods=["GET"])
+def admin_transcripciones():
+    try:
+        ws = get_sheet()
+        filas = get_filas_hoy(ws)
+        result = []
+        for f in filas:
+            if len(f) >= 2:
+                result.append({
+                    "timestamp": f[0],
+                    "texto": f[1],
+                    "chars": len(f[1]),
+                })
+        return jsonify({"transcripciones": result, "total": len(result)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/heartbeat", methods=["POST"])
+def admin_heartbeat():
+    data = request.get_json(silent=True) or {}
+    bateria = data.get("bateria", 0)
+    estado = data.get("estado", "desconocido")
+    tz_ar = timezone(timedelta(hours=-3))
+    ts = datetime.now(tz_ar).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[heartbeat] {ts} · batería {bateria}% · estado: {estado}", flush=True)
+    return jsonify({"ok": True, "timestamp": ts})

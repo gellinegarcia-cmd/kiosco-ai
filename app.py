@@ -355,6 +355,90 @@ def get_ultimo_informe_semanal():
         return None
 
 
+def get_memoria_sheet():
+    """Devuelve la hoja 'memoria_gelline', creándola si no existe."""
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        return spreadsheet.worksheet("memoria_gelline")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="memoria_gelline", rows=100, cols=3)
+        ws.append_row(["semana", "timestamp", "memoria"])
+        return ws
+
+def get_chat_contador_sheet():
+    """Devuelve la hoja 'chat_contador', creándola si no existe."""
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        return spreadsheet.worksheet("chat_contador")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="chat_contador", rows=100, cols=3)
+        ws.append_row(["fecha", "contador", "historial"])
+        return ws
+
+def get_memoria_acumulada():
+    """Lee todas las memorias semanales y las concatena."""
+    try:
+        ws = get_memoria_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        if not datos:
+            return None
+        return "\n\n---\n\n".join(
+            f"SEMANA {d[0]}:\n{d[2]}" for d in datos if len(d) >= 3 and d[2].strip()
+        )
+    except Exception as e:
+        print(f"[get_memoria_acumulada] ERROR: {e}", flush=True)
+        return None
+
+def get_chat_hoy():
+    """Devuelve el contador y historial de chat de hoy."""
+    try:
+        ws = get_chat_contador_sheet()
+        todas = ws.get_all_values()
+        hoy = date.today().isoformat()
+        datos = todas[1:] if len(todas) > 1 else []
+        for fila in reversed(datos):
+            if len(fila) >= 2 and fila[0] == hoy:
+                contador = int(fila[1]) if fila[1].isdigit() else 0
+                historial = json.loads(fila[2]) if len(fila) >= 3 and fila[2] else []
+                return ws, contador, historial, True
+        return ws, 0, [], False
+    except Exception as e:
+        print(f"[get_chat_hoy] ERROR: {e}", flush=True)
+        return None, 0, [], False
+
+def guardar_chat_hoy(ws, contador, historial, existe):
+    """Guarda o actualiza el contador y historial de chat de hoy."""
+    try:
+        hoy = date.today().isoformat()
+        fila = [hoy, str(contador), json.dumps(historial, ensure_ascii=False)]
+        if existe:
+            todas = ws.get_all_values()
+            for i, f in enumerate(todas):
+                if i > 0 and len(f) >= 1 and f[0] == hoy:
+                    ws.update(f"A{i+1}:C{i+1}", [fila])
+                    return
+        ws.append_row(fila)
+    except Exception as e:
+        print(f"[guardar_chat_hoy] ERROR: {e}", flush=True)
+
+CHAT_SYSTEM_PROMPT = """\
+Sos Gelline, el socio silencioso de este negocio argentino. Llevás semanas escuchando lo que pasa en el local y conocés el negocio mejor que nadie desde adentro.
+
+Cuando el dueño te hace una pregunta, respondés como un socio de confianza que conoce la historia del negocio — conectás lo que escuchaste hoy con lo que aprendiste las semanas anteriores. Usás ejemplos concretos de conversaciones reales cuando los tenés.
+
+REGLAS:
+- Hablás en español rioplatense, directo y cálido
+- Máximo 3 párrafos cortos por respuesta
+- Nunca decís "según mis datos" ni "basándome en" — simplemente contás lo que sabés como alguien que estuvo ahí
+- Si no tenés información sobre algo, lo decís honestamente y sugerís cómo conseguirla
+- Conectás información de distintas semanas cuando es relevante
+- Nunca hacés preguntas al final de tu respuesta — cerrás con una observación o sugerencia concreta
+- CORRECCIÓN DE TRANSCRIPCIÓN: las conversaciones vienen de audio transcripto automáticamente y pueden tener errores fonéticos — interpretá el contexto correctamente"""
+
+
 # ── Background para /analizar ─────────────────────────────────────────────────
 
 def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos, periodo="hoy", informe_anterior=None):
@@ -830,3 +914,131 @@ def admin_heartbeat():
     ts = datetime.now(tz_ar).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[heartbeat] {ts} · batería {bateria}% · estado: {estado}", flush=True)
     return jsonify({"ok": True, "timestamp": ts})
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.get_json(silent=True) or {}
+    pregunta = data.get("pregunta", "").strip()
+    if not pregunta:
+        return jsonify({"error": "Falta el campo 'pregunta'."}), 400
+    if len(pregunta) > 300:
+        return jsonify({"error": "Pregunta demasiado larga. Máximo 300 caracteres."}), 400
+
+    ws_chat, contador, historial, existe = get_chat_hoy()
+    LIMITE_DIARIO = 10
+    if contador >= LIMITE_DIARIO:
+        return jsonify({
+            "error": "limite_alcanzado",
+            "mensaje": f"Usaste las {LIMITE_DIARIO} consultas de hoy. Mañana podés seguir preguntando.",
+            "contador": contador,
+            "limite": LIMITE_DIARIO,
+        }), 429
+
+    try:
+        ws = get_sheet()
+        filas_hoy = get_filas_hoy(ws)
+        contexto_hoy = "\n".join(f"[{f[0]}] {f[1]}" for f in filas_hoy) if filas_hoy else "Sin conversaciones registradas hoy todavía."
+
+        memoria = get_memoria_acumulada()
+        contexto_memoria = f"MEMORIA ACUMULADA DEL NEGOCIO:\n{memoria}\n\n" if memoria else ""
+
+        contexto_completo = f"{contexto_memoria}CONVERSACIONES DE HOY:\n{contexto_hoy}"
+
+        messages = []
+        for msg in historial[-6:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({
+            "role": "user",
+            "content": f"CONTEXTO DEL NEGOCIO:\n{contexto_completo}\n\nPREGUNTA DEL DUEÑO:\n{pregunta}"
+        })
+
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=400,
+            system=CHAT_SYSTEM_PROMPT,
+            messages=messages,
+        )
+        texto_respuesta = respuesta.content[0].text
+
+        historial.append({"role": "user", "content": pregunta})
+        historial.append({"role": "assistant", "content": texto_respuesta})
+        nuevo_contador = contador + 1
+        guardar_chat_hoy(ws_chat, nuevo_contador, historial, existe)
+        cache_del('filas_hoy')
+
+        print(f"[/chat] Pregunta procesada — consulta {nuevo_contador}/{LIMITE_DIARIO}", flush=True)
+        return jsonify({
+            "respuesta": texto_respuesta,
+            "contador": nuevo_contador,
+            "limite": LIMITE_DIARIO,
+            "restantes": LIMITE_DIARIO - nuevo_contador,
+        })
+    except Exception as e:
+        print(f"[/chat] ERROR: {type(e).__name__}: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/memoria/generar", methods=["POST"])
+def generar_memoria():
+    """Genera y guarda el resumen de memoria de la semana actual."""
+    print("[/memoria/generar] Generando memoria semanal...", flush=True)
+    try:
+        ws = get_sheet()
+        filas = get_filas_semana(ws)
+        if not filas:
+            return jsonify({"error": "No hay transcripciones esta semana para generar memoria."}), 404
+
+        contexto = "\n".join(f"[{f[0]}] {f[1]}" for f in filas)
+        memoria_anterior = get_memoria_acumulada()
+
+        system = """\
+Sos Gelline analizando las conversaciones de la semana para construir tu memoria interna del negocio.
+Tu objetivo es extraer conocimiento acumulable — no decisiones puntuales sino patrones, preferencias de clientes,
+productos estrella, problemas recurrentes, oportunidades, contexto del negocio.
+Esta memoria la vas a usar para responder preguntas del dueño con contexto histórico.
+Escribí en primera persona, como si fuera tu diario de aprendizaje sobre este negocio.
+Sé específico — mencioná productos, precios, nombres si los hay, situaciones concretas.
+Máximo 400 palabras."""
+
+        user_content = ""
+        if memoria_anterior:
+            user_content = f"MEMORIA ACUMULADA HASTA AHORA:\n{memoria_anterior}\n\nCONVERSACIONES DE ESTA SEMANA:\n{contexto}\n\nActualizá y enriquecé la memoria con lo nuevo que aprendiste esta semana."
+        else:
+            user_content = f"CONVERSACIONES DE ESTA SEMANA:\n{contexto}\n\nEsta es la primera semana. Construí la memoria inicial del negocio."
+
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=600,
+            system=system,
+            messages=[{"role": "user", "content": user_content}]
+        )
+        memoria_nueva = respuesta.content[0].text
+
+        ws_mem = get_memoria_sheet()
+        semana = date.today().strftime("%Y-W%W")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws_mem.append_row([semana, ts, memoria_nueva])
+
+        print(f"[/memoria/generar] Memoria generada para semana {semana}", flush=True)
+        return jsonify({"ok": True, "semana": semana, "memoria": memoria_nueva})
+    except Exception as e:
+        print(f"[/memoria/generar] ERROR: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/memoria", methods=["GET"])
+def ver_memoria():
+    """Devuelve toda la memoria acumulada."""
+    try:
+        ws = get_memoria_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        return jsonify({
+            "semanas": len(datos),
+            "memoria": [{"semana": d[0], "timestamp": d[1], "contenido": d[2]} for d in datos if len(d) >= 3]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

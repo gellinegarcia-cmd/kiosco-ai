@@ -33,7 +33,8 @@ app = Flask(__name__)
 CORS(app)
 
 DECISIONES_FILE = "decisiones.txt"
-GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+GOOGLE_SHEET_ID  = os.environ.get("GOOGLE_SHEET_ID", "")
+PERSONAL_SHEET_ID = os.environ.get("PERSONAL_SHEET_ID", "1T874S-Qew1SESjyT7Z5kpRI-3_a0IOu2WoWusaV04Y8")
 GSHEETS_SCOPES  = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -211,6 +212,52 @@ def get_sheet():
         ws.append_row(["timestamp", "transcripcion"])
     return ws
 
+
+def get_personal_sheet():
+    """Devuelve la hoja principal del Sheet personal de Gelline."""
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(PERSONAL_SHEET_ID)
+    ws = spreadsheet.sheet1
+    if not ws.get_all_values():
+        ws.append_row(["timestamp", "transcripcion"])
+    return ws
+
+def get_personal_config_sheet():
+    """Devuelve la hoja config del Sheet personal, creándola si no existe."""
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(PERSONAL_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("config")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="config", rows=2, cols=len(CONFIG_HEADERS))
+        ws.append_row(CONFIG_HEADERS)
+        ws.append_row([CONFIG_DEFAULTS[h] for h in CONFIG_HEADERS])
+    return ws
+
+def get_personal_horarios_sheet():
+    """Devuelve la hoja horarios_semana del Sheet personal, creándola si no existe."""
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(PERSONAL_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("horarios_semana")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="horarios_semana", rows=10, cols=len(HORARIOS_HEADERS))
+        ws.append_row(HORARIOS_HEADERS)
+        for d in HORARIOS_DEFAULTS:
+            ws.append_row([d[h] for h in HORARIOS_HEADERS])
+    return ws
+
+def get_personal_filas_hoy(ws):
+    """Devuelve las filas de hoy del Sheet personal."""
+    cached = cache_get('personal_filas_hoy')
+    if cached is not None:
+        return cached
+    hoy = date.today().isoformat()
+    todas = ws.get_all_values()
+    datos = todas[1:] if todas and todas[0][0].lower() == "timestamp" else todas
+    result = [f for f in datos if len(f) >= 2 and f[0].startswith(hoy)]
+    cache_set('personal_filas_hoy', result)
+    return result
 
 def get_config_sheet():
     """Devuelve la hoja 'config', creándola con defaults si no existe."""
@@ -1040,5 +1087,177 @@ def ver_memoria():
             "semanas": len(datos),
             "memoria": [{"semana": d[0], "timestamp": d[1], "contenido": d[2]} for d in datos if len(d) >= 3]
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Endpoints personales (Sheet de Gelline) ────────────────────────────────────
+
+@app.route("/personal/config", methods=["GET"])
+def get_personal_config():
+    try:
+        ws = get_personal_config_sheet()
+        cfg = leer_config(ws)
+        ws_h = get_personal_horarios_sheet()
+        horarios = leer_horarios(ws_h)
+        debe_grabar = calcular_debe_grabar(cfg, horarios)
+        def b(k): return cfg.get(k, "false").lower() == "true"
+        return jsonify({
+            "activo":            b("activo"),
+            "apertura":          cfg.get("hora_apertura",      "07:00"),
+            "cierre":            cfg.get("hora_cierre",        "21:00"),
+            "descanso":          b("descanso"),
+            "descanso_inicio":   cfg.get("hora_siesta_inicio", "13:00"),
+            "descanso_fin":      cfg.get("hora_siesta_fin",    "15:00"),
+            "saludo_automatico": b("saludo_automatico"),
+            "debe_grabar":       debe_grabar,
+            "es_dispositivo":    request.headers.get("User-Agent", "").startswith("okhttp"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/personal/config", methods=["POST"])
+def set_personal_config():
+    data = request.get_json(silent=True) or {}
+    def bool_str(v):
+        return "true" if (v is True or str(v).lower() == "true") else "false"
+    nuevos = {
+        "activo":             bool_str(data.get("activo",            False)),
+        "hora_apertura":      data.get("apertura",          "07:00"),
+        "hora_cierre":        data.get("cierre",            "21:00"),
+        "descanso":           bool_str(data.get("descanso",          False)),
+        "hora_siesta_inicio": data.get("descanso_inicio",   "13:00"),
+        "hora_siesta_fin":    data.get("descanso_fin",      "15:00"),
+        "saludo_automatico":  bool_str(data.get("saludo_automatico", False)),
+    }
+    try:
+        ws = get_personal_config_sheet()
+        todas = ws.get_all_values()
+        if todas:
+            headers = todas[0]
+            fila = [nuevos.get(h, "") for h in headers]
+            col_fin = chr(ord("A") + len(headers) - 1)
+            if len(todas) >= 2:
+                ws.update(f"A2:{col_fin}2", [fila])
+            else:
+                ws.append_row(fila)
+        cache_del('config')
+        def b(k): return nuevos[k] == "true"
+        return jsonify({
+            "activo":          b("activo"),
+            "apertura":        nuevos["hora_apertura"],
+            "cierre":          nuevos["hora_cierre"],
+            "descanso":        b("descanso"),
+            "descanso_inicio": nuevos["hora_siesta_inicio"],
+            "descanso_fin":    nuevos["hora_siesta_fin"],
+            "debe_grabar":     calcular_debe_grabar(nuevos, leer_horarios(get_personal_horarios_sheet())),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/personal/audio", methods=["POST"])
+def procesar_personal_audio():
+    print("[/personal/audio] Request recibido", flush=True)
+    if "audio" not in request.files:
+        return jsonify({"error": "No se recibió archivo de audio."}), 400
+    archivo = request.files["audio"]
+    sufijo = os.path.splitext(archivo.filename)[1] or ".m4a"
+    with tempfile.NamedTemporaryFile(suffix=sufijo, delete=False) as tmp:
+        archivo.save(tmp.name)
+        tmp_path = tmp.name
+    tamanio_kb = os.path.getsize(tmp_path) / 1024
+    if tamanio_kb < 1:
+        os.remove(tmp_path)
+        return jsonify({"error": "Archivo demasiado pequeño."}), 400
+    try:
+        openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        with open(tmp_path, "rb") as f:
+            transcripcion = openai_client.audio.transcriptions.create(
+                model="whisper-1", file=f, language="es"
+            )
+        texto = transcripcion.text.strip()
+        if texto:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ws = get_personal_sheet()
+            ws.append_row([timestamp, texto])
+            cache_del('personal_filas_hoy')
+            print(f"[/personal/audio] Guardado: {texto[:80]}", flush=True)
+        return jsonify({"transcripcion": texto, "acumulado": bool(texto)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.route("/personal/analizar", methods=["GET"])
+def personal_analizar():
+    print("[/personal/analizar] Request recibido", flush=True)
+    try:
+        ws = get_personal_sheet()
+        filas = get_personal_filas_hoy(ws)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    if not filas:
+        return jsonify({"error": "No hay contexto personal acumulado hoy."}), 404
+    n = len(filas)
+    contexto_texto = "\n".join(f"[{f[0]}] {f[1]}" for f in filas)
+    threading.Thread(
+        target=_analizar_en_background,
+        args=(contexto_texto, "PERSONAL", n, "personal", None),
+        daemon=True
+    ).start()
+    return jsonify({"status": "procesando", "fragmentos": n})
+
+
+@app.route("/personal/horarios", methods=["GET"])
+def get_personal_horarios():
+    try:
+        ws = get_personal_horarios_sheet()
+        horarios = leer_horarios(ws)
+        return jsonify({"horarios": list(horarios.values())})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/personal/horarios", methods=["POST"])
+def set_personal_horarios():
+    data = request.get_json(silent=True) or {}
+    dias_data = data.get("horarios", [])
+    if not dias_data:
+        return jsonify({"error": "Falta el campo 'horarios'."}), 400
+    def bool_str(v):
+        return "true" if (v is True or str(v).lower() == "true") else "false"
+    try:
+        ws = get_personal_horarios_sheet()
+        todas = ws.get_all_values()
+        headers = todas[0] if todas else HORARIOS_HEADERS
+        for dia_data in dias_data:
+            dia = dia_data.get("dia", "").lower()
+            if dia not in DIAS_SEMANA:
+                continue
+            nueva_fila = [
+                dia,
+                dia_data.get("tipo", "general"),
+                bool_str(dia_data.get("cerrado", False)),
+                dia_data.get("apertura", "07:00"),
+                dia_data.get("cierre", "21:00"),
+                bool_str(dia_data.get("siesta", False)),
+                dia_data.get("siesta_inicio", "13:00"),
+                dia_data.get("siesta_fin", "15:00"),
+            ]
+            fila_idx = None
+            for i, fila in enumerate(todas):
+                if i > 0 and fila and fila[0] == dia:
+                    fila_idx = i + 1
+                    break
+            if fila_idx:
+                col_fin = chr(ord("A") + len(headers) - 1)
+                ws.update(f"A{fila_idx}:{col_fin}{fila_idx}", [nueva_fila])
+            else:
+                ws.append_row(nueva_fila)
+        return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

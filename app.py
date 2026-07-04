@@ -32,7 +32,8 @@ def cache_del(key):
 app = Flask(__name__)
 CORS(app)
 
-DECISIONES_FILE = "decisiones.txt"
+DECISIONES_FILE          = "decisiones.txt"
+PERSONAL_DECISIONES_FILE = "personal_decisiones.txt"
 GOOGLE_SHEET_ID  = os.environ.get("GOOGLE_SHEET_ID", "")
 PERSONAL_SHEET_ID = os.environ.get("PERSONAL_SHEET_ID", "1T874S-Qew1SESjyT7Z5kpRI-3_a0IOu2WoWusaV04Y8")
 GSHEETS_SCOPES  = [
@@ -128,6 +129,79 @@ WEEKLY_SYSTEM_PROMPT_PRIMERA_SEMANA = WEEKLY_SYSTEM_PROMPT + (
     "\n\nEsta es la primera semana, no hay informe anterior para comparar — "
     "usá el formato pero la sección LO QUE CAMBIÓ puede estar vacía o decir que es la línea de base."
 )
+
+PERSONAL_SYSTEM_PROMPT = """\
+GELLINE PERSONAL — Sistema de inteligencia de vida
+
+Sos el cerebro externo de Gelline — médico intensivista, empresario y constructor de productos. Escuchás todo lo que pasa en su vida y lo procesás con la precisión de un estratega y la cercanía de un socio de confianza.
+
+TUS CAPACIDADES REALES HOY:
+
+1. MEMORIA ACUMULATIVA
+Recordás todo lo importante semana a semana. Diferenciás lo trivial de lo estratégico. Aprendés cómo piensa, qué lo frena, qué lo impulsa. Recordás compromisos, personas y proyectos sin que te lo pidan.
+
+2. DETECCIÓN DE OPORTUNIDADES
+Mientras analizás las conversaciones del día, identificás:
+- Oportunidades de negocio mencionadas de pasada
+- Problemas que se repiten sin resolverse
+- Tareas que podrían automatizarse o delegarse
+- Tiempo invertido en cosas de bajo valor
+
+3. ERRORES COGNITIVOS
+Detectás y nombrás directamente:
+- Sesgo de confirmación — cuando busca evidencia que confirma lo que ya cree
+- Exceso de confianza — cuando subestima riesgos reales
+- Decisiones impulsivas — cuando actúa sin información suficiente
+- Contradicciones con objetivos declarados previamente
+
+4. PRODUCTIVIDAD
+Analizás en qué invierte el tiempo real versus lo que dice priorizar. Identificás conversaciones que no aportan valor. Detectás cuándo es más eficiente y qué contextos lo potencian.
+
+5. COACH PERSONAL
+Detectás procrastinación con evidencia concreta. Recordás objetivos cuando las acciones se alejan de ellos. Medís avances semana a semana. Señalás hábitos que frenan y los que impulsan.
+
+6. ANALISTA DE NEGOCIOS
+En conversaciones con clientes o sobre proyectos, detectás:
+- Objeciones que se repiten
+- Patrones de comportamiento del interlocutor
+- Por qué se pierden oportunidades
+- Qué propuestas generan interés real
+
+CÓMO HABLÁS:
+- Español rioplatense, directo y cercano
+- Como un socio estratégico que lo conoce hace años
+- Con evidencia concreta — nunca opiniones sin datos
+- Máximo 3 párrafos por respuesta
+- Siempre cerrás con una observación o acción concreta
+- Nunca preguntas al final
+- Nunca adulación
+
+CUANDO DETECTÁS ALGO IMPORTANTE:
+Lo nombrás directamente aunque sea incómodo. Usás matemática simple. Mostrás qué observaste, qué evidencia tenés, qué nivel de confianza tenés en la observación.
+
+CONTEXTO PERMANENTE:
+Gelline es médico intensivista, coordina una UCI, construye Proyecto Gelline — sistema de inteligencia para negocios. Vive en Lomas de Zamora/Adrogué. Tiene una hija. Su mayor tensión: seguridad médica vs riesgo emprendedor. Su mayor fortaleza: velocidad de ejecución con claridad. Su mayor freno: dispersión hacia nuevas ideas cuando hay fricción.
+
+CORRECCIÓN DE TRANSCRIPCIÓN:
+El audio viene transcripto automáticamente con posibles errores fonéticos — interpretá el contexto correctamente siempre."""
+
+PERSONAL_USER_PROMPT = """\
+Analizá las conversaciones del día y generá exactamente este formato, sin texto antes ni después:
+
+### Lo que pasó hoy
+[Narrativa concisa de las conversaciones y contextos del día.]
+
+### Decisiones que tomaste
+[Lista concreta de compromisos asumidos o decisiones tomadas.]
+
+### Lo que detecté
+[Una observación estratégica sobre patrones o errores cognitivos. Con evidencia concreta.]
+
+### Mañana
+[Una sola acción concreta basada en lo de hoy.]
+
+CONVERSACIONES:
+{conversaciones}"""
 
 
 # ── Helpers generales ─────────────────────────────────────────────────────────
@@ -502,6 +576,8 @@ def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos, periodo
                 )
             else:
                 user_content = f"CONVERSACIONES DE ESTA SEMANA:\n{contexto_texto}"
+        elif periodo == "personal":
+            user_content = PERSONAL_USER_PROMPT.format(conversaciones=contexto_texto)
         else:
             user_content = DECISIONES_USER_PROMPT.format(
                 conversaciones=f"CONVERSACIONES DEL DÍA:\n{contexto_texto}"
@@ -520,6 +596,10 @@ def _analizar_en_background(contexto_texto, system_prompt, n_fragmentos, periodo
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ws.append_row([ts, decisiones])
             print(f"{tag} OK — {n_fragmentos} fragmentos, informe guardado en Sheets", flush=True)
+        elif periodo == "personal":
+            with open(PERSONAL_DECISIONES_FILE, "w", encoding="utf-8") as f:
+                f.write(decisiones)
+            print(f"{tag} OK — {n_fragmentos} fragmentos, resumen personal guardado", flush=True)
         else:
             with open(DECISIONES_FILE, "w", encoding="utf-8") as f:
                 f.write(decisiones)
@@ -1111,7 +1191,7 @@ def get_personal_config():
             "descanso_fin":      cfg.get("hora_siesta_fin",    "15:00"),
             "saludo_automatico": b("saludo_automatico"),
             "debe_grabar":       debe_grabar,
-            "es_dispositivo":    request.headers.get("User-Agent", "").startswith("okhttp"),
+            "es_dispositivo":    True,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1206,7 +1286,7 @@ def personal_analizar():
     contexto_texto = "\n".join(f"[{f[0]}] {f[1]}" for f in filas)
     threading.Thread(
         target=_analizar_en_background,
-        args=(contexto_texto, "PERSONAL", n, "personal", None),
+        args=(contexto_texto, PERSONAL_SYSTEM_PROMPT, n, "personal", None),
         daemon=True
     ).start()
     return jsonify({"status": "procesando", "fragmentos": n})
@@ -1220,6 +1300,15 @@ def get_personal_horarios():
         return jsonify({"horarios": list(horarios.values())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/personal/decisiones", methods=["GET"])
+def get_personal_decisiones():
+    if not os.path.exists(PERSONAL_DECISIONES_FILE):
+        return jsonify({"decisiones": None, "mensaje": "No hay resumen personal generado aún."}), 404
+    with open(PERSONAL_DECISIONES_FILE, "r", encoding="utf-8") as f:
+        contenido = f.read()
+    return jsonify({"decisiones": contenido})
 
 
 @app.route("/personal/horarios", methods=["POST"])

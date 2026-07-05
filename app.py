@@ -261,6 +261,35 @@ def get_personal_filas_hoy(ws):
     cache_set('personal_filas_hoy', result)
     return result
 
+def get_posta_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(POSTA_SHEET_ID)
+    ws = spreadsheet.sheet1
+    if not ws.get_all_values():
+        ws.append_row(["timestamp", "turno_id", "cama", "nombre", "dni", "edad", "dx", "transcripcion", "rol"])
+    return ws
+
+def get_posta_config_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(POSTA_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("config")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="config", rows=2, cols=len(CONFIG_HEADERS))
+        ws.append_row(CONFIG_HEADERS)
+        ws.append_row([CONFIG_DEFAULTS[h] for h in CONFIG_HEADERS])
+    return ws
+
+def get_posta_turnos_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(POSTA_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("turnos")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="turnos", rows=500, cols=6)
+        ws.append_row(["turno_id", "timestamp", "rol", "medico", "pacientes_json", "pdf_texto"])
+    return ws
+
 def get_config_sheet():
     """Devuelve la hoja 'config', creándola con defaults si no existe."""
     client = _gspread_client()
@@ -1265,24 +1294,181 @@ def set_personal_horarios():
         return jsonify({"error": str(e)}), 500
 
 
-# ── Endpoints POSTA (aliases al flujo de negocio) ─────────────────────────────
-
-@app.route("/posta/audio", methods=["POST"])
-def posta_audio():
-    return procesar_audio()
+# ── Endpoints POSTA ───────────────────────────────────────────────────────────
 
 @app.route("/posta/config", methods=["GET"])
 def posta_get_config():
-    return get_config()
+    try:
+        ws = get_posta_config_sheet()
+        cfg = leer_config(ws)
+        def b(k): return cfg.get(k, "false").lower() == "true"
+        return jsonify({
+            "activo": b("activo"),
+            "apertura": cfg.get("hora_apertura", "07:00"),
+            "cierre": cfg.get("hora_cierre", "21:00"),
+            "debe_grabar": calcular_debe_grabar(cfg),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/posta/config", methods=["POST"])
 def posta_set_config():
-    return set_config()
+    data = request.get_json(silent=True) or {}
+    def bool_str(v): return "true" if (v is True or str(v).lower() == "true") else "false"
+    nuevos = {
+        "activo": bool_str(data.get("activo", False)),
+        "hora_apertura": data.get("apertura", "07:00"),
+        "hora_cierre": data.get("cierre", "21:00"),
+        "descanso": "false",
+        "hora_siesta_inicio": "13:00",
+        "hora_siesta_fin": "14:00",
+        "saludo_automatico": "false",
+    }
+    try:
+        ws = get_posta_config_sheet()
+        todas = ws.get_all_values()
+        if todas:
+            headers = todas[0]
+            fila = [nuevos.get(h, "") for h in headers]
+            col_fin = chr(ord("A") + len(headers) - 1)
+            if len(todas) >= 2:
+                ws.update(f"A2:{col_fin}2", [fila])
+            else:
+                ws.append_row(fila)
+        cache_del('posta_config')
+        return jsonify({"ok": True, "activo": nuevos["activo"] == "true"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/posta/analizar", methods=["GET"])
+@app.route("/posta/audio", methods=["POST"])
+def posta_audio():
+    if "audio" not in request.files:
+        return jsonify({"error": "No se recibió audio."}), 400
+    archivo = request.files["audio"]
+    turno_id = request.form.get("turno_id", "")
+    cama = request.form.get("cama", "")
+    nombre = request.form.get("nombre", "")
+    dni = request.form.get("dni", "")
+    edad = request.form.get("edad", "")
+    dx = request.form.get("dx", "")
+    rol = request.form.get("rol", "medico")
+    sufijo = os.path.splitext(archivo.filename)[1] or ".m4a"
+    with tempfile.NamedTemporaryFile(suffix=sufijo, delete=False) as tmp:
+        archivo.save(tmp.name)
+        tmp_path = tmp.name
+    tamanio_kb = os.path.getsize(tmp_path) / 1024
+    if tamanio_kb < 1:
+        os.remove(tmp_path)
+        return jsonify({"error": "Audio demasiado pequeño."}), 400
+    try:
+        openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        with open(tmp_path, "rb") as f:
+            transcripcion = openai_client.audio.transcriptions.create(
+                model="whisper-1", file=f, language="es"
+            )
+        texto = transcripcion.text.strip()
+        if texto:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ws = get_posta_sheet()
+            ws.append_row([timestamp, turno_id, cama, nombre, dni, edad, dx, texto, rol])
+            print(f"[/posta/audio] Guardado: cama {cama} · {len(texto)} chars", flush=True)
+        return jsonify({"transcripcion": texto, "ok": bool(texto)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+@app.route("/posta/analizar", methods=["POST"])
 def posta_analizar():
-    return analizar()
+    data = request.get_json(silent=True) or {}
+    turno_id = data.get("turno_id", "")
+    cama = data.get("cama", "")
+    nombre = data.get("nombre", "")
+    edad = data.get("edad", "")
+    dx = data.get("dx", "")
+    rol = data.get("rol", "medico")
+    try:
+        ws = get_posta_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if todas and todas[0][0].lower() == "timestamp" else todas
+        filas_paciente = [f for f in datos if len(f) >= 9 and f[1] == turno_id and f[2] == cama]
+        if not filas_paciente:
+            return jsonify({"error": "Sin transcripciones para este paciente."}), 404
+        contexto = "\n".join(f[7] for f in filas_paciente)
+        perfil = f"Paciente: {nombre}, {edad} años. Diagnóstico: {dx}. Rol que documenta: {rol}."
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            system="POSTA_SYSTEM_PROMPT",
+            messages=[{"role": "user", "content": f"{perfil}\n\nTRANSCRIPCIÓN DEL PASE:\n{contexto}"}]
+        )
+        evolucion = respuesta.content[0].text
+        return jsonify({"evolucion": evolucion, "cama": cama, "nombre": nombre})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/posta/decisiones", methods=["GET"])
-def posta_decisiones():
-    return get_decisiones()
+@app.route("/posta/turno", methods=["POST"])
+def posta_guardar_turno():
+    data = request.get_json(silent=True) or {}
+    turno_id = data.get("turno_id", datetime.now().strftime("%Y%m%d%H%M%S"))
+    rol = data.get("rol", "medico")
+    medico = data.get("medico", "")
+    pacientes = data.get("pacientes", [])
+    pdf_texto = data.get("pdf_texto", "")
+    try:
+        ws = get_posta_turnos_sheet()
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([turno_id, ts, rol, medico, json.dumps(pacientes, ensure_ascii=False), pdf_texto])
+        return jsonify({"ok": True, "turno_id": turno_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/turno/<turno_id>", methods=["GET"])
+def posta_get_turno(turno_id):
+    try:
+        ws = get_posta_turnos_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        for fila in reversed(datos):
+            if len(fila) >= 5 and fila[0] == turno_id:
+                pacientes = json.loads(fila[4]) if fila[4] else []
+                return jsonify({
+                    "turno_id": fila[0],
+                    "timestamp": fila[1],
+                    "rol": fila[2],
+                    "medico": fila[3],
+                    "pacientes": pacientes,
+                    "pdf_texto": fila[5] if len(fila) > 5 else "",
+                })
+        return jsonify({"error": "Turno no encontrado."}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/chat", methods=["POST"])
+def posta_chat():
+    data = request.get_json(silent=True) or {}
+    pregunta = data.get("pregunta", "").strip()
+    contexto_paciente = data.get("contexto_paciente", "")
+    historial = data.get("historial", [])
+    if not pregunta:
+        return jsonify({"error": "Falta la pregunta."}), 400
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        messages = []
+        for msg in historial[-6:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({
+            "role": "user",
+            "content": f"CONTEXTO DEL PACIENTE:\n{contexto_paciente}\n\nPREGUNTA:\n{pregunta}"
+        })
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=400,
+            system="POSTA_SYSTEM_PROMPT",
+            messages=messages,
+        )
+        return jsonify({"respuesta": respuesta.content[0].text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

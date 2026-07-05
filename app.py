@@ -33,8 +33,9 @@ app = Flask(__name__)
 CORS(app)
 
 DECISIONES_FILE = "decisiones.txt"
-GOOGLE_SHEET_ID  = os.environ.get("GOOGLE_SHEET_ID", "")
+GOOGLE_SHEET_ID   = os.environ.get("GOOGLE_SHEET_ID", "")
 PERSONAL_SHEET_ID = os.environ.get("PERSONAL_SHEET_ID", "1T874S-Qew1SESjyT7Z5kpRI-3_a0IOu2WoWusaV04Y8")
+POSTA_SHEET_ID    = os.environ.get("POSTA_SHEET_ID",    "1uAMt18X-eN-cEk-q_XlWpMx6gFSCDaGKw37WEuvO3N4")
 GSHEETS_SCOPES  = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",

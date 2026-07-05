@@ -1262,3 +1262,26 @@ def set_personal_horarios():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ── Endpoints POSTA (aliases al flujo de negocio) ─────────────────────────────
+
+@app.route("/posta/audio", methods=["POST"])
+def posta_audio():
+    return procesar_audio()
+
+@app.route("/posta/config", methods=["GET"])
+def posta_get_config():
+    return get_config()
+
+@app.route("/posta/config", methods=["POST"])
+def posta_set_config():
+    return set_config()
+
+@app.route("/posta/analizar", methods=["GET"])
+def posta_analizar():
+    return analizar()
+
+@app.route("/posta/decisiones", methods=["GET"])
+def posta_decisiones():
+    return get_decisiones()

@@ -1512,3 +1512,28 @@ def posta_chat():
         return jsonify({"respuesta": respuesta.content[0].text})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/posta/contexto/<turno_id>/<cama>", methods=["GET"])
+def posta_get_contexto(turno_id, cama):
+    try:
+        ws = get_posta_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if todas and todas[0][0].lower() == "timestamp" else todas
+        filas = [f for f in datos if len(f) >= 9 and f[1] == turno_id and f[2] == cama]
+        if not filas:
+            return jsonify({"contexto": "", "fragmentos": 0})
+        contexto = "\n".join(f"[{f[0]}] {f[7]}" for f in filas)
+        return jsonify({
+            "contexto": contexto,
+            "fragmentos": len(filas),
+            "paciente": {
+                "cama": filas[0][2],
+                "nombre": filas[0][3],
+                "dni": filas[0][4],
+                "edad": filas[0][5],
+                "dx": filas[0][6],
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

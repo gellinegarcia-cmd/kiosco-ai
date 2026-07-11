@@ -330,6 +330,31 @@ def get_posta_turnos_sheet():
         ws.append_row(["turno_id", "timestamp", "rol", "medico", "pacientes_json", "pdf_texto"])
     return ws
 
+def get_posta_pacientes_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(POSTA_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("pacientes_activos")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="pacientes_activos", rows=500, cols=12)
+        ws.append_row(["id_paciente", "servicio_id", "cama", "nombre", "dni", "edad", "dx", "institucion", "fecha_ingreso", "activo", "fecha_egreso", "notas"])
+    return ws
+
+def get_posta_evoluciones_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(POSTA_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("evoluciones")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="evoluciones", rows=2000, cols=10)
+        ws.append_row(["id_paciente", "fecha", "turno", "rol", "medico", "matricula", "servicio_id", "evolucion_completa", "turno_id", "institucion"])
+    return ws
+
+def generar_id_paciente(servicio_id, cama):
+    import hashlib
+    base = f"{servicio_id}-{cama}-{datetime.now().strftime('%Y%m%d')}"
+    return "P" + hashlib.md5(base.encode()).hexdigest()[:8].upper()
+
 def get_config_sheet():
     """Devuelve la hoja 'config', creándola con defaults si no existe."""
     client = _gspread_client()
@@ -1535,5 +1560,148 @@ def posta_get_contexto(turno_id, cama):
                 "dx": filas[0][6],
             }
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/posta/paciente/ingresar", methods=["POST"])
+def posta_ingresar_paciente():
+    data = request.get_json(silent=True) or {}
+    servicio_id = data.get("servicio_id", "").strip()
+    cama = data.get("cama", "").strip()
+    nombre = data.get("nombre", "").strip()
+    dni = data.get("dni", "").strip()
+    edad = data.get("edad", "").strip()
+    dx = data.get("dx", "").strip()
+    institucion = data.get("institucion", "").strip()
+    if not servicio_id or not cama or not nombre:
+        return jsonify({"error": "Faltan datos obligatorios."}), 400
+    try:
+        ws = get_posta_pacientes_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        for i, fila in enumerate(datos):
+            if len(fila) >= 3 and fila[1] == servicio_id and fila[2] == cama and fila[9] == "true":
+                id_existente = fila[0]
+                return jsonify({"ok": True, "id_paciente": id_existente, "existente": True})
+        id_paciente = generar_id_paciente(servicio_id, cama)
+        fecha_ingreso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([id_paciente, servicio_id, cama, nombre, dni, edad, dx, institucion, fecha_ingreso, "true", "", ""])
+        return jsonify({"ok": True, "id_paciente": id_paciente, "existente": False})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/servicio/<servicio_id>", methods=["GET"])
+def posta_get_servicio(servicio_id):
+    try:
+        ws_pac = get_posta_pacientes_sheet()
+        todas = ws_pac.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        pacientes_activos = []
+        for fila in datos:
+            if len(fila) >= 10 and fila[1] == servicio_id and fila[9] == "true":
+                pacientes_activos.append({
+                    "id_paciente": fila[0],
+                    "cama": fila[2],
+                    "nombre": fila[3],
+                    "dni": fila[4],
+                    "edad": fila[5],
+                    "dx": fila[6],
+                    "institucion": fila[7],
+                    "fecha_ingreso": fila[8],
+                })
+        ws_evo = get_posta_evoluciones_sheet()
+        todas_evo = ws_evo.get_all_values()
+        evo_datos = todas_evo[1:] if len(todas_evo) > 1 else []
+        for pac in pacientes_activos:
+            evoluciones = [f for f in evo_datos if len(f) >= 1 and f[0] == pac["id_paciente"]]
+            pac["total_evoluciones"] = len(evoluciones)
+            if evoluciones:
+                ultima = evoluciones[-1]
+                pac["ultima_evolucion"] = ultima[1] if len(ultima) > 1 else ""
+                pac["ultimo_medico"] = ultima[4] if len(ultima) > 4 else ""
+        pacientes_activos.sort(key=lambda x: x["cama"])
+        return jsonify({"servicio_id": servicio_id, "pacientes": pacientes_activos})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/paciente/<id_paciente>", methods=["GET"])
+def posta_get_paciente(id_paciente):
+    try:
+        ws_pac = get_posta_pacientes_sheet()
+        todas = ws_pac.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        paciente = None
+        for fila in datos:
+            if len(fila) >= 1 and fila[0] == id_paciente:
+                paciente = {
+                    "id_paciente": fila[0],
+                    "servicio_id": fila[1],
+                    "cama": fila[2],
+                    "nombre": fila[3],
+                    "dni": fila[4],
+                    "edad": fila[5],
+                    "dx": fila[6],
+                    "institucion": fila[7],
+                    "fecha_ingreso": fila[8],
+                    "activo": fila[9] == "true",
+                }
+                break
+        if not paciente:
+            return jsonify({"error": "Paciente no encontrado."}), 404
+        ws_evo = get_posta_evoluciones_sheet()
+        todas_evo = ws_evo.get_all_values()
+        evo_datos = todas_evo[1:] if len(todas_evo) > 1 else []
+        evoluciones = []
+        for fila in evo_datos:
+            if len(fila) >= 1 and fila[0] == id_paciente:
+                evoluciones.append({
+                    "fecha": fila[1],
+                    "turno": fila[2],
+                    "rol": fila[3],
+                    "medico": fila[4],
+                    "matricula": fila[5],
+                    "evolucion": fila[7],
+                    "institucion": fila[9] if len(fila) > 9 else "",
+                })
+        return jsonify({"paciente": paciente, "evoluciones": evoluciones})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/evolucion/guardar", methods=["POST"])
+def posta_guardar_evolucion():
+    data = request.get_json(silent=True) or {}
+    id_paciente = data.get("id_paciente", "").strip()
+    turno_id = data.get("turno_id", "").strip()
+    turno = data.get("turno", "").strip()
+    rol = data.get("rol", "medico").strip()
+    medico = data.get("medico", "").strip()
+    matricula = data.get("matricula", "").strip()
+    servicio_id = data.get("servicio_id", "").strip()
+    evolucion = data.get("evolucion", "").strip()
+    institucion = data.get("institucion", "").strip()
+    if not id_paciente or not evolucion:
+        return jsonify({"error": "Faltan datos."}), 400
+    try:
+        ws = get_posta_evoluciones_sheet()
+        fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([id_paciente, fecha, turno, rol, medico, matricula, servicio_id, evolucion, turno_id, institucion])
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/paciente/<id_paciente>/egresar", methods=["POST"])
+def posta_egresar_paciente(id_paciente):
+    try:
+        ws = get_posta_pacientes_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        for i, fila in enumerate(datos):
+            if len(fila) >= 1 and fila[0] == id_paciente:
+                fecha_egreso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ws.update_cell(i + 2, 10, "false")
+                ws.update_cell(i + 2, 11, fecha_egreso)
+                return jsonify({"ok": True})
+        return jsonify({"error": "Paciente no encontrado."}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500

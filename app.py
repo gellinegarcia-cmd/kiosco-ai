@@ -1539,6 +1539,52 @@ def posta_chat():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/posta/analizar-imagen", methods=["POST"])
+def posta_analizar_imagen():
+    data = request.get_json(silent=True) or {}
+    imagen_base64 = data.get("imagen_base64", "")
+    mime_type = data.get("mime_type", "image/jpeg")
+    nombre = data.get("nombre", "")
+    edad = data.get("edad", "")
+    dx = data.get("dx", "")
+    if not imagen_base64:
+        return jsonify({"error": "Falta la imagen."}), 400
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            system=(
+                "Sos un médico intensivista experto analizando imágenes clínicas.\n"
+                "Analizás la imagen y describís los hallazgos clínicamente relevantes en español,\n"
+                "de forma concisa y precisa, como lo haría un médico en una evolución clínica.\n"
+                "Identificá el tipo de imagen automáticamente (Rx tórax, ECG, monitor, TAC, laboratorio, etc).\n"
+                "Describí solo hallazgos objetivos y relevantes. Sin introducción ni conclusión.\n"
+                "Formato: \"[Tipo de imagen]: [hallazgos principales]\""
+            ),
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": imagen_base64,
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": f"Contexto del paciente: {nombre}, {edad} años. Diagnóstico: {dx}. Analizá esta imagen clínica e integrala al contexto del paciente."
+                    }
+                ]
+            }]
+        )
+        return jsonify({"hallazgo": respuesta.content[0].text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/posta/contexto/<turno_id>/<cama>", methods=["GET"])
 def posta_get_contexto(turno_id, cama):
     try:

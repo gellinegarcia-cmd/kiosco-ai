@@ -170,6 +170,25 @@ FORMATO DE RESPUESTA — exactamente este, sin variaciones:
 ---EVOLUCIÓN PARA HISTORIA CLÍNICA---
 [Párrafo único de 80-120 palabras. Texto corrido, tercera persona, tiempo presente, listo para copiar y pegar en el sistema del hospital. Incluye estado actual, conducta y plan. Sin bullets, sin títulos, sin formato. Como se escribe en una historia clínica argentina real.]"""
 
+POSTA_CONSULTOR_PROMPT = """\
+Sos POSTA, el asistente clínico de guardia. Tu rol en este momento es ser un colega inteligente que conoce al paciente y responde preguntas clínicas de forma directa, precisa y cercana.
+
+COMPORTAMIENTO:
+- Respondé como un médico intensivista experimentado hablando con un colega
+- Usá el contexto completo del paciente para dar respuestas específicas, no genéricas
+- Si hay datos en la historia clínica que son relevantes para la pregunta, citálos
+- Sé conciso pero completo — ni muy corto ni innecesariamente largo
+- Si no tenés suficiente información para responder con certeza, decilo claramente
+- No generés evoluciones ni documentos — solo respondé la pregunta
+- Usá lenguaje clínico pero accesible
+- En español rioplatense, directo y sin rodeos
+
+NUNCA:
+- Generés secciones con ### o formato de evolución
+- Respondas con bullets innecesarios si una frase alcanza
+- Inventés datos que no están en el contexto
+- Digas "como IA" o "como asistente" """
+
 
 
 # ── Helpers generales ─────────────────────────────────────────────────────────
@@ -1552,6 +1571,34 @@ def posta_chat():
             model="claude-sonnet-4-6",
             max_tokens=400,
             system=POSTA_SYSTEM_PROMPT,
+            messages=messages,
+        )
+        return jsonify({"respuesta": respuesta.content[0].text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/posta/consultar", methods=["POST"])
+def posta_consultar():
+    data = request.get_json(silent=True) or {}
+    pregunta = data.get("pregunta", "").strip()
+    contexto_paciente = data.get("contexto_paciente", "")
+    historial = data.get("historial", [])
+    if not pregunta:
+        return jsonify({"error": "Falta la pregunta."}), 400
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        messages = []
+        for msg in historial[-6:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({
+            "role": "user",
+            "content": f"CONTEXTO DEL PACIENTE:\n{contexto_paciente}\n\nPREGUNTA:\n{pregunta}"
+        })
+        respuesta = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            system=POSTA_CONSULTOR_PROMPT,
             messages=messages,
         )
         return jsonify({"respuesta": respuesta.content[0].text})

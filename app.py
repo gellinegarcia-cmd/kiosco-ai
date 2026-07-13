@@ -350,6 +350,16 @@ def get_posta_evoluciones_sheet():
         ws.append_row(["id_paciente", "fecha", "turno", "rol", "medico", "matricula", "servicio_id", "evolucion_completa", "turno_id", "institucion"])
     return ws
 
+def get_posta_alertas_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(POSTA_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("alertas")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="alertas", rows=2000, cols=10)
+        ws.append_row(["id", "id_paciente", "servicio_id", "texto", "tipo", "fecha_creacion", "fecha_recordatorio", "cumplida", "medico", "turno_id"])
+    return ws
+
 def generar_id_paciente(servicio_id, cama):
     import hashlib
     base = f"{servicio_id}-{cama}-{datetime.now().strftime('%Y%m%d')}"
@@ -1749,5 +1759,90 @@ def posta_egresar_paciente(id_paciente):
                 ws.update_cell(i + 2, 11, fecha_egreso)
                 return jsonify({"ok": True})
         return jsonify({"error": "Paciente no encontrado."}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/posta/alerta/crear", methods=["POST"])
+def posta_crear_alerta():
+    data = request.get_json(silent=True) or {}
+    id_paciente = data.get("id_paciente", "").strip()
+    servicio_id = data.get("servicio_id", "").strip()
+    texto = data.get("texto", "").strip()
+    tipo = data.get("tipo", "manual").strip()
+    fecha_recordatorio = data.get("fecha_recordatorio", "").strip()
+    medico = data.get("medico", "").strip()
+    turno_id = data.get("turno_id", "").strip()
+    if not id_paciente or not texto:
+        return jsonify({"error": "Faltan datos."}), 400
+    try:
+        ws = get_posta_alertas_sheet()
+        import uuid
+        alerta_id = str(uuid.uuid4())[:8].upper()
+        fecha_creacion = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([alerta_id, id_paciente, servicio_id, texto, tipo, fecha_creacion, fecha_recordatorio, "false", medico, turno_id])
+        return jsonify({"ok": True, "id": alerta_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/alertas/<id_paciente>", methods=["GET"])
+def posta_get_alertas(id_paciente):
+    try:
+        ws = get_posta_alertas_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        alertas = []
+        for i, fila in enumerate(datos):
+            if len(fila) >= 8 and fila[1] == id_paciente and fila[7] == "false":
+                alertas.append({
+                    "id": fila[0],
+                    "texto": fila[3],
+                    "tipo": fila[4],
+                    "fecha_creacion": fila[5],
+                    "fecha_recordatorio": fila[6],
+                    "medico": fila[8] if len(fila) > 8 else "",
+                    "fila": i + 2
+                })
+        alertas.sort(key=lambda x: x.get("fecha_recordatorio") or x.get("fecha_creacion"))
+        return jsonify({"alertas": alertas})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/alerta/<alerta_id>/cumplir", methods=["POST"])
+def posta_cumplir_alerta(alerta_id):
+    try:
+        ws = get_posta_alertas_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        for i, fila in enumerate(datos):
+            if len(fila) >= 1 and fila[0] == alerta_id:
+                ws.update_cell(i + 2, 8, "true")
+                return jsonify({"ok": True})
+        return jsonify({"error": "Alerta no encontrada."}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/alertas/servicio/<servicio_id>/hoy", methods=["GET"])
+def posta_alertas_hoy(servicio_id):
+    from datetime import date
+    hoy = date.today().strftime("%Y-%m-%d")
+    try:
+        ws = get_posta_alertas_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        alertas = []
+        for fila in datos:
+            if len(fila) >= 8 and fila[2] == servicio_id and fila[7] == "false":
+                fecha_rec = fila[6][:10] if fila[6] else ""
+                if not fecha_rec or fecha_rec <= hoy:
+                    alertas.append({
+                        "id": fila[0],
+                        "id_paciente": fila[1],
+                        "texto": fila[3],
+                        "tipo": fila[4],
+                        "fecha_recordatorio": fila[6],
+                        "medico": fila[8] if len(fila) > 8 else "",
+                    })
+        return jsonify({"alertas": alertas, "total": len(alertas)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

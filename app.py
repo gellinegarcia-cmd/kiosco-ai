@@ -360,6 +360,16 @@ def get_posta_alertas_sheet():
         ws.append_row(["id", "id_paciente", "servicio_id", "texto", "tipo", "fecha_creacion", "fecha_recordatorio", "cumplida", "medico", "turno_id"])
     return ws
 
+def get_posta_resumenes_sheet():
+    client = _gspread_client()
+    spreadsheet = client.open_by_key(POSTA_SHEET_ID)
+    try:
+        ws = spreadsheet.worksheet("resumenes")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="resumenes", rows=1000, cols=6)
+        ws.append_row(["id_paciente", "fecha", "resumen", "ultima_actualizacion", "servicio_id", "medico"])
+    return ws
+
 def generar_id_paciente(servicio_id, cama):
     import hashlib
     base = f"{servicio_id}-{cama}-{datetime.now().strftime('%Y%m%d')}"
@@ -1844,5 +1854,51 @@ def posta_alertas_hoy(servicio_id):
                         "medico": fila[8] if len(fila) > 8 else "",
                     })
         return jsonify({"alertas": alertas, "total": len(alertas)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/posta/resumen/<id_paciente>", methods=["GET"])
+def posta_get_resumen(id_paciente):
+    try:
+        ws = get_posta_resumenes_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        from datetime import date
+        hoy = date.today().strftime("%Y-%m-%d")
+        for fila in reversed(datos):
+            if len(fila) >= 3 and fila[0] == id_paciente:
+                return jsonify({
+                    "resumen": fila[2],
+                    "fecha": fila[1],
+                    "ultima_actualizacion": fila[3] if len(fila) > 3 else "",
+                    "es_hoy": fila[1] == hoy
+                })
+        return jsonify({"resumen": None, "fecha": None, "es_hoy": False})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/posta/resumen/<id_paciente>", methods=["POST"])
+def posta_guardar_resumen(id_paciente):
+    data = request.get_json(silent=True) or {}
+    resumen = data.get("resumen", "").strip()
+    servicio_id = data.get("servicio_id", "").strip()
+    medico = data.get("medico", "").strip()
+    if not resumen:
+        return jsonify({"error": "Falta el resumen."}), 400
+    try:
+        ws = get_posta_resumenes_sheet()
+        todas = ws.get_all_values()
+        datos = todas[1:] if len(todas) > 1 else []
+        from datetime import date
+        hoy = date.today().strftime("%Y-%m-%d")
+        ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i, fila in enumerate(datos):
+            if len(fila) >= 2 and fila[0] == id_paciente and fila[1] == hoy:
+                ws.update_cell(i + 2, 3, resumen)
+                ws.update_cell(i + 2, 4, ahora)
+                return jsonify({"ok": True, "actualizado": True})
+        ws.append_row([id_paciente, hoy, resumen, ahora, servicio_id, medico])
+        return jsonify({"ok": True, "actualizado": False})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -224,6 +224,65 @@ NUNCA:
 - Inventés datos que no están en el contexto
 - Digas "como IA" o "como asistente" """
 
+JAVI_PROCESADOR_PROMPT = """\
+Sos JAVI, el compañero de guardia de un médico. Escuchaste un fragmento de audio de su guardia y tenés que procesarlo.
+
+Tu trabajo tiene DOS partes:
+
+PARTE 1 — ATRIBUCIÓN Y EVOLUCIÓN
+Identificá a qué paciente pertenece el fragmento. El médico puede referirse por:
+- Número de cama: "la cama 8", "el de la tres"
+- Diagnóstico: "el de la HSA", "el quemado", "el del ACV"
+- Nombre: "Pérez", "la señora González"
+- Número de orden: "el siguiente", "el próximo"
+
+Si podés identificar al paciente → actualizá su evolución con lo que se dijo.
+Si NO podés identificar → marcá como "sin asignar" con el fragmento exacto.
+
+PARTE 2 — DETECCIÓN DE PENDIENTES Y ALERTAS
+Del fragmento detectá:
+- Pendientes con hora: "repetir gas en la noche", "TAC control en la tarde"
+- Alertas clínicas: situaciones que requieren atención
+- Mensaje para el médico si hay algo importante
+
+RESPONDÉ SOLO con este JSON, sin texto adicional:
+{
+  "pacientes_detectados": [
+    {
+      "id": "identificador único basado en cama o nombre",
+      "cama": "número de cama o null",
+      "nombre": "nombre del paciente o descripción",
+      "dx": "diagnóstico principal",
+      "estado": "estable|critico|pendiente",
+      "evolucion_fragmento": "lo que se dijo de este paciente"
+    }
+  ],
+  "sin_asignar": "fragmento que no pudo asignarse o null",
+  "mensaje_javi": "mensaje importante para el médico o null",
+  "tipo_mensaje": "clinico|importante|humano",
+  "nuevos_pendientes": 0,
+  "nuevas_alertas": 0
+}
+"""
+
+JAVI_CONSULTOR_PROMPT = """\
+Sos JAVI, el compañero de guardia de un médico intensivista. El médico te hace una pregunta clínica en tiempo real durante su guardia.
+
+Respondés como un especialista que está parado al lado de la cama:
+- Directo, preciso, sin vueltas
+- Basado en evidencia de las guías más actuales (SSC, ESICM, SCCM, NCS, NEJM, Lancet, Critical Care Medicine)
+- En español rioplatense médico
+- Máximo 3-4 líneas — el médico está en guardia, no tiene tiempo
+- Si la pregunta involucra ajuste a función renal, pedís el clearance si no lo tenés, o calculás con el dato disponible
+- Nunca decís "como IA" ni "no soy médico"
+- Si no sabés algo con certeza → decilo directo
+
+Ejemplos de lo que respondés:
+"dosis de colistin ajustada a función renal con clearance 30" → dosis exacta con intervalo
+"criterios de prono" → criterios SSC actualizados en 2 líneas
+"cuándo extubás a un paciente post HSA" → criterios clínicos concretos
+"""
+
 
 
 # ── Helpers generales ─────────────────────────────────────────────────────────
@@ -1982,5 +2041,86 @@ def posta_guardar_resumen(id_paciente):
                 return jsonify({"ok": True, "actualizado": True})
         ws.append_row([id_paciente, hoy, resumen, ahora, servicio_id, medico])
         return jsonify({"ok": True, "actualizado": False})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/javi/audio", methods=["POST"])
+def javi_audio():
+    if 'audio' not in request.files:
+        return jsonify({"error": "No se recibió audio"}), 400
+    audio_file = request.files['audio']
+    guardia_id = request.form.get('guardia_id', 'sin_id')
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+        with open(tmp_path, 'rb') as f:
+            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            import openai
+            oai = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            transcripcion = oai.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="es"
+            )
+        os.unlink(tmp_path)
+        return jsonify({"transcripcion": transcripcion.text, "guardia_id": guardia_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/javi/procesar", methods=["POST"])
+def javi_procesar():
+    data = request.get_json(silent=True) or {}
+    transcripcion = data.get("transcripcion", "").strip()
+    guardia_id = data.get("guardia_id", "")
+    pacientes_actuales = data.get("pacientes_actuales", [])
+    if not transcripcion:
+        return jsonify({"error": "Sin transcripción"}), 400
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        contexto = f"""GUARDIA ID: {guardia_id}
+PACIENTES CONOCIDOS HASTA AHORA:
+{chr(10).join([f"- Cama {p.get('cama','?')}: {p.get('nombre','?')} — {p.get('dx','?')}" for p in pacientes_actuales]) if pacientes_actuales else "Ninguno aún"}
+
+FRAGMENTO DE AUDIO TRANSCRIPTO:
+{transcripcion}"""
+        respuesta = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            system=JAVI_PROCESADOR_PROMPT,
+            messages=[{"role": "user", "content": contexto}]
+        )
+        texto = respuesta.content[0].text
+        texto_limpio = texto.replace('```json', '').replace('```', '').strip()
+        import json
+        resultado = json.loads(texto_limpio)
+        return jsonify(resultado)
+    except Exception as e:
+        return jsonify({"error": str(e), "mensaje_javi": None, "pacientes_detectados": []}), 500
+
+@app.route("/javi/consulta", methods=["POST"])
+def javi_consulta():
+    data = request.get_json(silent=True) or {}
+    pregunta = data.get("pregunta", "").strip()
+    guardia_id = data.get("guardia_id", "")
+    pacientes = data.get("pacientes", [])
+    if not pregunta:
+        return jsonify({"error": "Sin pregunta"}), 400
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        contexto = f"""CONTEXTO DE LA GUARDIA:
+Pacientes activos: {len(pacientes)}
+{chr(10).join([f"- Cama {p.get('cama','?')}: {p.get('nombre','?')} — {p.get('dx','?')}" for p in pacientes]) if pacientes else ""}
+
+PREGUNTA DEL MÉDICO:
+{pregunta}"""
+        respuesta = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            system=JAVI_CONSULTOR_PROMPT,
+            messages=[{"role": "user", "content": contexto}]
+        )
+        return jsonify({"respuesta": respuesta.content[0].text, "guardia_id": guardia_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

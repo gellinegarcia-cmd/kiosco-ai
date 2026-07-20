@@ -2153,7 +2153,7 @@ def ojo_analizar():
         anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         msg = anthropic_client.messages.create(
             model="claude-sonnet-5",
-            max_tokens=1000,
+            max_tokens=3000,
             messages=[{
                 "role": "user",
                 "content": [

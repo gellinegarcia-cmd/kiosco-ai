@@ -2124,3 +2124,50 @@ PREGUNTA DEL MÉDICO:
         return jsonify({"respuesta": respuesta.content[0].text, "guardia_id": guardia_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _ojo_prompt(rubro):
+    r = f" (rubro: {rubro})" if rubro else ""
+    return f"""Sos un analista que ayuda a dueños de comercios en Argentina a leer su operación.
+Te paso una foto de la pantalla de un negocio{r}.
+1. Leé los datos visibles (números, ventas, montos, tickets, medios de pago, stock).
+2. Analizá con marco semáforo:
+   - ROJO: lo que se está perdiendo o el mayor riesgo, con un número concreto de plata/oportunidad. Si estimás, hacelo conservador y marcalo.
+   - AMARILLO: algo a vigilar.
+   - VERDE: lo que funciona bien.
+3. 3 movidas concretas para mañana, cortas.
+Devolvé SOLO JSON válido, sin markdown:
+{{"rubro":"...","datos":[{{"k":"","v":""}}],"rojo":{{"t":"","d":"","numero":"$ ...","estimado":true}},"amarillo":{{"t":"","d":""}},"verde":{{"t":"","d":""}},"acciones":["","",""]}}
+Si no se lee nada útil: {{"error":"No se leen datos claros en la foto."}} Sé conciso."""
+
+
+@app.route("/ojo/analizar", methods=["POST"])
+def ojo_analizar():
+    data = request.get_json(silent=True) or {}
+    b64 = data.get("imagen")
+    mime = data.get("mime", "image/png")
+    rubro = (data.get("rubro") or "").strip()
+    if not b64:
+        return jsonify({"error": "No llegó ninguna imagen."}), 400
+    try:
+        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        msg = anthropic_client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                    {"type": "text", "text": _ojo_prompt(rubro)},
+                ],
+            }],
+        )
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        clean = text.replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(clean)
+        return jsonify(parsed)
+    except json.JSONDecodeError:
+        return jsonify({"error": "No pude leer la pantalla. Probá con una foto más nítida."})
+    except Exception as e:
+        print("OJO error:", e)
+        return jsonify({"error": "Falló el análisis. Intentá de nuevo."}), 500

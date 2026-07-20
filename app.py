@@ -2134,6 +2134,7 @@ Te paso una foto de la pantalla de un negocio{r}.
 
 Reglas:
 - Leé todos los datos visibles (montos, cantidades, productos, tickets, medios de pago).
+- En el campo "datos" listá como máximo los 6 ítems más relevantes que viste, no todos los que haya en la pantalla. Priorizá los que sustenten el rojo/amarillo/verde.
 - Traducí SIEMPRE lo que ves al idioma del dueño: cuánta plata, por dónde se fuga, qué margen pierde. Un dato de inventario no es "hay poco aceite", es "esto es plata inmovilizada" o "esto es una fuga".
 - ROJO: el hallazgo MÁS filoso, el que le pararía el corazón al dueño. Prioridad: señales de robo/merma > plata que se pierde > margen mal aprovechado. Con un número concreto (estimado conservador si hace falta, marcalo). NO uses el rojo para consejos operativos obvios (reponer, pesar) que el encargado ya sabe.
 - AMARILLO: un riesgo real que todavía no explotó.
@@ -2153,25 +2154,34 @@ def ojo_analizar():
     rubro = (data.get("rubro") or "").strip()
     if not b64:
         return jsonify({"error": "No llegó ninguna imagen."}), 400
-    try:
-        anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        msg = anthropic_client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=5000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
-                    {"type": "text", "text": _ojo_prompt(rubro)},
-                ],
-            }],
-        )
-        text = "".join(b.text for b in msg.content if b.type == "text")
-        clean = text.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(clean)
-        return jsonify(parsed)
-    except json.JSONDecodeError:
-        return jsonify({"error": "No pude leer la pantalla. Probá con una foto más nítida."})
-    except Exception as e:
-        print("OJO error:", e)
-        return jsonify({"error": "Falló el análisis. Intentá de nuevo."}), 500
+
+    anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+    for intento in range(2):
+        try:
+            msg = anthropic_client.messages.create(
+                model="claude-sonnet-5",
+                max_tokens=5000,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                        {"type": "text", "text": _ojo_prompt(rubro)},
+                    ],
+                }],
+            )
+            if msg.stop_reason == "max_tokens":
+                print(f"OJO intento {intento + 1}: corte por stop_reason=max_tokens, reintentando" if intento == 0 else f"OJO intento {intento + 1}: corte por stop_reason=max_tokens de nuevo")
+                continue
+            text = "".join(b.text for b in msg.content if b.type == "text")
+            clean = text.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(clean)
+            return jsonify(parsed)
+        except json.JSONDecodeError as e:
+            print(f"OJO intento {intento + 1}: JSON invalido -", e)
+            continue
+        except Exception as e:
+            print("OJO error:", e)
+            return jsonify({"error": "Falló el análisis. Intentá de nuevo."}), 500
+
+    return jsonify({"error": "Estamos procesando tu pantalla, probá de nuevo en unos segundos."})
